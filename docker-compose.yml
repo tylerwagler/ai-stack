@@ -33,9 +33,8 @@ services:
       --port 8082
       --models-preset /app/models.ini
       --models-max 1
-      --jinja
-      --verbose
-      --metrics --api-prefix /chat
+      --metrics
+      --api-prefix /chat
       --poll 100
       --api-key ${LLAMA_API_KEY}
     healthcheck:
@@ -55,7 +54,7 @@ services:
     environment:
       - LLAMA_SERVER_HOST=llama-server
       - LLAMA_SERVER_PORT=8082
-      - DEFAULT_MODEL=glm
+      - DEFAULT_MODEL=GLM 4.7 Flash
       - PROXY_PORT=8081
       - LLAMA_API_KEY=${LLAMA_API_KEY}
       - LLAMA_API_PREFIX=/chat
@@ -106,10 +105,11 @@ services:
   # GPU Fan Control Manager
   # ---------------------------------------------------------
   fan-manager:
-    build: 
+    build:
       context: ./temper
       dockerfile: Dockerfile
     container_name: fan-manager
+    hostname: ellie
     restart: always
     privileged: true
 
