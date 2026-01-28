@@ -1,0 +1,12 @@
+[submodule "llama.cpp"]
+	path = llama.cpp
+	url = https://github.com/tylerwagler/llama.cpp.git
+	branch = master
+[submodule "temper"]
+	path = temper
+	url = https://github.com/tylerwagler/temper.git
+	branch = master
+[submodule "temper-view"]
+	path = temper-view
+	url = https://github.com/tylerwagler/temper-view.git
+	branch = master
