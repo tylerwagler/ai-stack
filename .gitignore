@@ -1,0 +1,39 @@
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Backups
+backups/
+
+# Docker volumes (data persistence)
+*_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

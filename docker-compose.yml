@@ -1,0 +1,182 @@
+include:
+  - path: supabase-ai/docker-compose.yml
+
+services:
+  # ---------------------------------------------------------
+  # SERVICE 1: THE ROUTER (Port 8081)
+  # Dynamic Multi-Model Swapping (GLM + Nemotron)
+  # ---------------------------------------------------------
+  llama-server:
+    build:
+      context: ./llama.cpp
+      dockerfile: .devops/cuda-new.Dockerfile
+      target: server
+      args:
+        CUDA_VERSION: "13.1.1"
+    image: llama-cpp-server:local
+    container_name: llama-server
+    restart: always
+    ports:
+      - "8082:8082"
+    volumes:
+      - llama_cache:/models
+      - ./models.ini:/app/models.ini
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      --host 0.0.0.0
+      --port 8082
+      --models-preset /app/models.ini
+      --models-max 1
+      --jinja
+      --verbose
+      --metrics --api-prefix /chat
+      --poll 100
+      --api-key ${LLAMA_API_KEY}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -f -H \"Authorization: Bearer $LLAMA_API_KEY\" http://localhost:8082/chat/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 240s
+
+  llama-proxy:
+    build:
+      context: ./llama-proxy
+    container_name: llama-proxy
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      - LLAMA_SERVER_HOST=llama-server
+      - LLAMA_SERVER_PORT=8082
+      - DEFAULT_MODEL=glm
+      - PROXY_PORT=8081
+      - LLAMA_API_KEY=${LLAMA_API_KEY}
+      - LLAMA_API_PREFIX=/chat
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+    networks:
+      - default
+      - ai-stack-net
+    volumes:
+      - ./llama-proxy/logs:/app/logs
+    depends_on:
+      llama-server:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------
+  # SERVICE 2 THE FACE (Port 3000)
+  # Open WebUI
+  # ---------------------------------------------------------
+  # ---------------------------------------------------------
+  # SERVICE 2 THE FACE (Port 3000)
+  # Open WebUI
+  # ---------------------------------------------------------
+  #open-webui:
+  #  image: ghcr.io/open-webui/open-webui:main
+  #  container_name: open-webui
+  #  restart: always
+  #  ports:
+  #    - "3000:8080"
+  #  volumes:
+  #    - open-webui_data:/app/backend/data
+  #  environment:
+  #    # UNIFIED ROUTER SUPPORT
+  #    - OPENAI_API_BASE_URLS=http://llama-server:8081/v1
+  #    - OPENAI_API_KEYS=sk-no-key-required
+  #    - WEBUI_SECRET_KEY=9fcabaf540b1069e42825f73a11acd25cfa0c6d76bd82d5e6292a441ea211ec8
+  #  depends_on:
+  #    llama-server:
+  #      condition: service_healthy
+
+    
+  # ---------------------------------------------------------
+  # SERVICE 3: THE LUNGS
+  # GPU Fan Control Manager
+  # ---------------------------------------------------------
+  fan-manager:
+    build: 
+      context: ./temper
+      dockerfile: Dockerfile
+    container_name: fan-manager
+    restart: always
+    privileged: true
+
+    # cap_add:
+    #   - SYS_ADMIN # May be needed for some hardware sensors/controls
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      - FAN_SETPOINTS=50:30 70:65 78:95 80:100
+      - CHASSIS_FAN_SETPOINTS=45:20 55:30 65:70 75:100
+      - POWER_SETPOINTS=70:230 80:175 85:125
+      - LLAMA_HOST=llama-server
+      - LLAMA_PORT=8082
+      - LLAMA_API_KEY=${LLAMA_API_KEY}
+      - LLAMA_API_PREFIX=/chat
+      - METRICS_API_KEY=${METRICS_API_KEY}
+      - IDRAC_IP=${IDRAC_IP}
+      - IDRAC_USER=${IDRAC_USER}
+      - IDRAC_PASS=${IDRAC_PASS}
+      - IDRAC_PASS=${IDRAC_PASS}
+      # - IDRAC_SSH=1
+      - VERBOSE=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  stripe-handler:
+    build:
+      context: ./stripe-handler
+    container_name: stripe-handler
+    restart: always
+    environment:
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=db
+      - PORTAL_URL=http://localhost:3000
+    networks:
+      - default
+      - ai-stack-net
+    depends_on:
+      db:
+        condition: service_healthy
+
+  temper-view:
+    build:
+      context: ./temper-view
+    container_name: temper-view
+    restart: always
+    ports:
+      - "3000:80"
+    networks:
+      - default
+      - ai-stack-net
+    environment:
+      - METRICS_API_KEY=${METRICS_API_KEY}
+      - LLAMA_API_KEY=${LLAMA_API_KEY}
+
+networks:
+  ai-stack-net:
+    external: true
+
+volumes:
+  llama_cache:
+  open-webui_data:

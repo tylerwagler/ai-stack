@@ -1,0 +1,23 @@
+  ## OpenWebUI - Chat Interface (Port 8005)
+  - name: open-webui
+    _comment: 'OpenWebUI: Match request Host: localhost:8005 -> http://open-webui:8080/'
+    url: http://open-webui:8080/
+    routes:
+      - name: open-webui-all
+        strip_path: true
+        paths:
+          - /
+        hosts:
+          - localhost:8005
+          - 127.0.0.1:8005
+    plugins:
+      - name: cors
+      - name: basic-auth
+        config:
+          hide_credentials: true
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-User-Email:dashboard@local
+              - X-User-Name:Dashboard User

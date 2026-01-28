@@ -1,0 +1,95 @@
+#!/bin/bash
+
+# Wrapper for Claude Code CLI to use Local AI Stack
+# Usage: ./claude-local [args]
+
+# Configuration
+export AI_STACK_HOST="ellie"
+export AI_STACK_IP="10.20.10.5"
+
+# Discover the correct base URL
+if [[ "$(hostname)" == "$AI_STACK_HOST" ]]; then
+    export ANTHROPIC_BASE_URL="http://localhost:8081"
+else
+    if ping -c 1 -W 1 "$AI_STACK_IP" > /dev/null 2>&1; then
+        export ANTHROPIC_BASE_URL="http://${AI_STACK_IP}:8081"
+    else
+        export ANTHROPIC_BASE_URL="http://${AI_STACK_HOST}.local:8081"
+    fi
+fi
+
+# Load API Key
+CONFIG_DIR="$HOME/.config/claude-local"
+CONFIG_FILE="$CONFIG_DIR/env"
+
+# 1. Try Local .env files (dev environment)
+SEARCH_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for dir in "$SEARCH_PATH" "$(dirname "$SEARCH_PATH")" "/home/tyler/ai-stack"; do
+    if [ -f "$dir/.env" ]; then
+        export LLAMA_API_KEY=$(grep "^LLAMA_API_KEY=" "$dir/.env" | cut -d= -f2- | tr -d "[:space:]")
+        break
+    fi
+done
+
+# 2. Try User Config (portable mode)
+if [ -z "$LLAMA_API_KEY" ] && [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+fi
+
+# 3. Prompt and Save if missing
+if [ -z "$LLAMA_API_KEY" ]; then
+    echo "AI Stack API Key not found."
+    read -sp "Enter LLAMA_API_KEY: " user_key
+    echo
+    if [ -n "$user_key" ]; then
+        mkdir -p "$CONFIG_DIR"
+        echo "export LLAMA_API_KEY=$user_key" > "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
+        export LLAMA_API_KEY="$user_key"
+        echo "Key saved to $CONFIG_FILE"
+    else
+        echo "Error: Key required."
+        exit 1
+    fi
+fi
+
+if [ -z "$LLAMA_API_KEY" ]; then
+    echo "Error: LLAMA_API_KEY not found. Please set it in .env or your environment."
+    exit 1
+fi
+export ANTHROPIC_API_KEY="$LLAMA_API_KEY"
+
+# Disable non-essential traffic
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# Check for model argument or special commands
+has_model=false
+for arg in "$@"; do
+    if [[ "$arg" == "--model" ]] || [[ "$arg" == "--help" ]] || [[ "$arg" == "-h" ]] || [[ "$arg" == "--version" ]] || [[ "$arg" == "-v" ]]; then
+        has_model=true
+        break
+    fi
+done
+
+# If no model provided, fetch available ones and prompt
+if [ "$has_model" = false ]; then
+    echo "Fetching available models from local stack..."
+    models_raw=$(curl -s --connect-timeout 2 --max-time 10 -H "Authorization: Bearer $LLAMA_API_KEY" "${ANTHROPIC_BASE_URL}/v1/models" | python3 -c "import sys, json; data=json.load(sys.stdin); print('\n'.join([m['id'] for m in data.get('data', [])]))" 2>/dev/null)
+
+    if [ -z "$models_raw" ]; then
+        echo "Error: Could not connect to AI Stack at ${ANTHROPIC_BASE_URL}."
+        exit 1
+    fi
+
+    mapfile -t model_options <<< "$models_raw"
+    echo "Select a model to use:"
+    select model_choice in "${model_options[@]}"; do
+        if [ -n "$model_choice" ]; then
+            set -- "$@" "--model" "$model_choice"
+            break
+        fi
+    done
+fi
+
+# Run Claude Code
+exec claude "$@"
