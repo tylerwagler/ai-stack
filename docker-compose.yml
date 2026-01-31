@@ -54,7 +54,7 @@ services:
     environment:
       - LLAMA_SERVER_HOST=llama-server
       - LLAMA_SERVER_PORT=8082
-      - DEFAULT_MODEL=GLM 4.7 Flash
+      - DEFAULT_MODEL=Nemotron 3 Nano
       - PROXY_PORT=8081
       - LLAMA_API_KEY=${LLAMA_API_KEY}
       - LLAMA_API_PREFIX=/chat
@@ -62,7 +62,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
-      - POSTGRES_PORT=5432
+      - POSTGRES_PORT=5433
     networks:
       - default
       - ai-stack-net
@@ -151,7 +151,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
-      - PORTAL_URL=http://localhost:3000
+      - POSTGRES_PORT=5433
+      - PORTAL_URL=https://ellie.elytrondefense.com
     networks:
       - default
       - ai-stack-net

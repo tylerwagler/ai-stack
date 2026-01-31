@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**For operational procedures, testing protocols, and deployment guidelines, see [AGENTS.md](./docs/AGENTS.md).**
+
+## Working Files Policy
+
+**All temporary and working files MUST go in the `/temp` directory.** This includes:
+
+- Test scripts and one-off utilities
+- SQL migrations under development
+- Debug output and diagnostic files
+- Scratch files and experiments
+- Any file that isn't part of the permanent codebase
+
+**Do NOT create files in the repository root.** The `/temp` directory is gitignored and can be freely used without polluting the project structure.
+
 ## System Overview
 
 This is a **GPU-accelerated AI inference platform** with integrated billing, user management, and hardware monitoring. The stack consists of:
@@ -53,10 +67,10 @@ docker compose logs -f llama-server
 docker compose logs -f llama-proxy
 
 # Full update (downloads models, rebuilds images, restarts)
-./update.sh
+./scripts/update.sh
 
 # Restore from backup
-./update.sh --restore
+./scripts/update.sh --restore
 ```
 
 ### Testing Individual Components
@@ -246,10 +260,20 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 1. **Make changes** to source code in respective directories
 2. **Rebuild** affected service: `docker compose up -d --build <service-name>`
 3. **Test** using curl/browser against service endpoints
+   - Run `./scripts/integration-test.sh` for full stack validation
+   - Run `./scripts/security-test.sh` before production deployment
 4. **Check logs** for errors: `docker compose logs -f <service-name>`
-5. **Commit** changes (this is not a git repository currently)
+5. **Commit** changes following git workflow in [AGENTS.md](./docs/AGENTS.md#3-git-workflow)
 
 For frontend changes, use `npm run dev` in `temper-view/` for hot reload during development.
+
+**IMPORTANT: See [AGENTS.md](./docs/AGENTS.md) for:**
+- Comprehensive testing protocols
+- Change management procedures
+- Security guidelines
+- Git commit standards
+- Credential management
+- Troubleshooting procedures
 
 ## Model Management
 
@@ -263,4 +287,4 @@ docker compose up -d llama-proxy
 2. Add entry to `/models.ini`
 3. Restart llama-server: `docker compose restart llama-server`
 
-**Update existing models**: Use `./update.sh` which handles backup, download, and restart
+**Update existing models**: Use `./scripts/update.sh` which handles backup, download, and restart

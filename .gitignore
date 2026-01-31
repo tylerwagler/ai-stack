@@ -1,3 +1,6 @@
+# Working files
+temp/
+
 # Claude Code
 .claude/
 
@@ -24,6 +27,14 @@ yarn-error.log
 # Logs
 *.log
 logs/
+*_logs.txt
+build_*.log
+
+# Build artifacts and temp files
+llama_help.txt
+server_ts.txt
+proxy_ts.txt
+full_router_logs.txt
 
 # Backups
 backups/
