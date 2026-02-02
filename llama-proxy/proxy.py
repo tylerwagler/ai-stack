@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 # Configuration from environment
 LLAMA_SERVER_HOST = os.environ.get("LLAMA_SERVER_HOST", "llama-server")
 LLAMA_SERVER_PORT = os.environ.get("LLAMA_SERVER_PORT", "8082")
-DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "glm")
 PORT = int(os.environ.get("PROXY_PORT", "8081"))
 LLAMA_API_PREFIX = os.environ.get("LLAMA_API_PREFIX", "")
 LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY", "")
@@ -65,15 +64,13 @@ def get_active_model():
     try:
         models = get_available_models()
         if models:
-            # Find a loaded or loading model
-            for model in models:
-                status = model.get('status', {}).get('value', '')
-                if status in ('loaded', 'ready', 'loading'):
-                    active_model = model['id']
-                    LOADED_MODEL_CACHE = active_model
-                    LOADED_MODEL_CACHE_TIME = now
-                    print(f"Active model detected ({status}): {active_model}", file=sys.stderr)
-                    return active_model
+            # If llama.cpp returns models, they're loaded and ready
+            # (it returns 503 when no model is loaded)
+            active_model = models[0]['id']
+            LOADED_MODEL_CACHE = active_model
+            LOADED_MODEL_CACHE_TIME = now
+            print(f"Active model detected: {active_model}", file=sys.stderr)
+            return active_model
     except Exception as e:
         print(f"Error detecting active model: {e}", file=sys.stderr)
 
@@ -81,9 +78,8 @@ def get_active_model():
     return None
 
 def get_loaded_model():
-    """Query llama-server to find which model is currently loaded/loading, fallback to default"""
-    active = get_active_model()
-    return active if active else DEFAULT_MODEL
+    """Query llama-server to find which model is currently loaded/loading, return None if no model loaded"""
+    return get_active_model()
 
 def model_exists(model_name):
     """Check if a specific model exists in the available models"""
@@ -369,36 +365,21 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
                     requested_model = data.get('model', '')
                     is_streaming = data.get('stream', False)
 
-                    # Intelligent Model Mapping
-                    if requested_model.startswith('claude-') or not requested_model:
-                        # Claude model requested or no model specified
-                        # Route to currently loaded model, or default if none loaded
-                        target_model = get_loaded_model()
-                        data['model'] = target_model
-                        body = json.dumps(data).encode('utf-8')
-                        if requested_model:
-                            print(f"Proxy: Rewriting '{requested_model}' -> '{target_model}' (loaded/default)", file=sys.stderr)
-                        else:
-                            print(f"Proxy: No model specified, using '{target_model}' (loaded/default)", file=sys.stderr)
-                        model_name = target_model
-                    elif model_exists(requested_model):
-                        # Valid model name requested - pass through to llama.cpp
-                        model_name = requested_model
-                        print(f"Proxy: Using requested model '{requested_model}' (exists)", file=sys.stderr)
-                    else:
-                        # Model doesn't exist - check what's active
-                        active_model = get_active_model()
-                        if active_model:
-                            # A model is loaded or loading - use it instead of switching
-                            target_model = active_model
-                            print(f"Proxy: Model '{requested_model}' not found, using active '{target_model}' (no switch)", file=sys.stderr)
-                        else:
-                            # No model loaded/loading - route to default
-                            target_model = DEFAULT_MODEL
-                            print(f"Proxy: Model '{requested_model}' not found, loading default '{target_model}'", file=sys.stderr)
-                        data['model'] = target_model
-                        body = json.dumps(data).encode('utf-8')
-                        model_name = target_model
+                    # ALWAYS route to currently loaded model (admin-controlled via temper)
+                    active_model = get_loaded_model()
+
+                    if not active_model:
+                        # No model loaded - return error
+                        self.send_error_json(503, "No model is currently loaded. Please wait or contact administrator.")
+                        return
+
+                    # Rewrite request to use active model
+                    if requested_model and requested_model != active_model:
+                        print(f"[Proxy] User requested '{requested_model}', routing to '{active_model}'", file=sys.stderr)
+
+                    data['model'] = active_model
+                    body = json.dumps(data).encode('utf-8')
+                    model_name = active_model
                 except Exception as e:
                     print(f"Proxy Error parsing JSON: {e}", file=sys.stderr)
     
