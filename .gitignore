@@ -24,6 +24,10 @@ yarn-error.log
 .env.local
 .env.*.local
 
+# Credential documentation (use .example templates only)
+docs/supabase-credentials.md
+**/credentials.md
+
 # Logs
 *.log
 logs/

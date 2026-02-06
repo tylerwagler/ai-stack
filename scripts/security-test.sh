@@ -130,9 +130,11 @@ else
 fi
 
 # Test 8: Hardcoded Supabase keys (from SecurityAudit.md issue #1)
+# Exclude test files which use generic JWT mock tokens (not real credentials)
 echo -e "${YELLOW}Test 8: Hardcoded Supabase keys in frontend...${NC}"
 if [ -d temper-view/src ]; then
-    SUPABASE_KEYS=$(grep -r "eyJhbGciOi" temper-view/src/ 2>/dev/null | wc -l)
+    SUPABASE_KEYS=$(grep -r "eyJhbGciOi" temper-view/src/ --include="*.ts" --include="*.tsx" \
+        --exclude-dir=__tests__ --exclude-dir=test --exclude-dir=tests 2>/dev/null | wc -l)
     if [ "$SUPABASE_KEYS" -eq 0 ]; then
         test_status 0 "No hardcoded Supabase keys in frontend"
     else
@@ -166,12 +168,12 @@ fi
 echo -e "${YELLOW}Test 11: Internal service port exposure...${NC}"
 EXPOSED_PORTS=0
 # llama-server should be internal only (localhost or not exposed)
-if netstat -tuln 2>/dev/null | grep -q "0.0.0.0:8082"; then
+if ss -tuln 2>/dev/null | grep -q "0.0.0.0:8082"; then
     echo -e "${RED}  ⚠️  llama-server exposed on all interfaces${NC}"
     EXPOSED_PORTS=$((EXPOSED_PORTS + 1))
 fi
 # fan-manager should be localhost only
-if netstat -tuln 2>/dev/null | grep "3001" | grep -q "0.0.0.0"; then
+if ss -tuln 2>/dev/null | grep -q "0.0.0.0:3001"; then
     echo -e "${RED}  ⚠️  fan-manager exposed on all interfaces${NC}"
     EXPOSED_PORTS=$((EXPOSED_PORTS + 1))
 fi

@@ -17,10 +17,11 @@ services:
     container_name: llama-server
     restart: always
     ports:
-      - "8082:8082"
+      - "127.0.0.1:8082:8082"
     volumes:
       - llama_cache:/models
       - ./models.ini:/app/models.ini
+      - ./llama.cpp/entrypoint.sh:/entrypoint.sh
     deploy:
       resources:
         reservations:
@@ -28,15 +29,9 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    command: >
-      --host 0.0.0.0
-      --port 8082
-      --models-preset /app/models.ini
-      --models-max 1
-      --metrics
-      --api-prefix /chat
-      --poll 100
-      --api-key ${LLAMA_API_KEY}
+    environment:
+      - LLAMA_API_KEY=${LLAMA_API_KEY}
+    entrypoint: ["/entrypoint.sh"]
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -f -H \"Authorization: Bearer $LLAMA_API_KEY\" http://localhost:8082/chat/health"]
       interval: 30s
@@ -54,7 +49,6 @@ services:
     environment:
       - LLAMA_SERVER_HOST=llama-server
       - LLAMA_SERVER_PORT=8082
-      - DEFAULT_MODEL=Nemotron 3 Nano
       - PROXY_PORT=8081
       - LLAMA_API_KEY=${LLAMA_API_KEY}
       - LLAMA_API_PREFIX=/chat
@@ -126,12 +120,19 @@ services:
       - LLAMA_API_KEY=${LLAMA_API_KEY}
       - LLAMA_API_PREFIX=/chat
       - METRICS_API_KEY=${METRICS_API_KEY}
+      - SUPABASE_URL=http://kong:8000
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
       - IDRAC_IP=${IDRAC_IP}
       - IDRAC_USER=${IDRAC_USER}
       - IDRAC_PASS=${IDRAC_PASS}
-      - IDRAC_PASS=${IDRAC_PASS}
       # - IDRAC_SSH=1
       - VERBOSE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - llama_cache:/models
+    networks:
+      - default
+      - ai-stack-net
     deploy:
       resources:
         reservations:
@@ -163,6 +164,8 @@ services:
   temper-view:
     build:
       context: ./temper-view
+      args:
+        VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
     container_name: temper-view
     restart: always
     ports:
