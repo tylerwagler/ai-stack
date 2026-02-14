@@ -1,0 +1,5 @@
+nvidia-ml-py
+psutil
+docker
+requests
+psycopg2-binary
