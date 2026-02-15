@@ -63,7 +63,7 @@ services:
     plugins:
       - name: cors
   - name: auth-v1-open-signup
-    url: http://auth:9999/
+    url: http://auth:9999/signup
     routes:
       - name: auth-v1-open-signup
         strip_path: true
@@ -72,7 +72,7 @@ services:
     plugins:
       - name: cors
   - name: auth-v1-open-token
-    url: http://auth:9999/
+    url: http://auth:9999/token
     routes:
       - name: auth-v1-open-token
         strip_path: true
@@ -81,7 +81,7 @@ services:
     plugins:
       - name: cors
   - name: auth-v1-open-health
-    url: http://auth:9999/
+    url: http://auth:9999/health
     routes:
       - name: auth-v1-open-health
         strip_path: true
@@ -92,7 +92,7 @@ services:
 
   ## Secure Auth routes
   - name: auth-v1
-    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/*'
+    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/* (GoTrue handles own auth)'
     url: http://auth:9999/
     routes:
       - name: auth-v1-all
@@ -101,17 +101,8 @@ services:
           - /auth/v1/
     plugins:
       - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
 
-  ## REST routes
+  ## Secure REST routes
   - name: rest-v1
     _comment: 'PostgREST: /rest/v1/* -> http://rest:3000/*'
     url: http://rest:3000/
