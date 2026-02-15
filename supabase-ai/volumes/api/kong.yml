@@ -92,7 +92,7 @@ services:
 
   ## Secure Auth routes
   - name: auth-v1
-    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/*'
+    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/* (GoTrue handles own auth)'
     url: http://auth:9999/
     routes:
       - name: auth-v1-all
@@ -101,15 +101,6 @@ services:
           - /auth/v1/
     plugins:
       - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
 
   ## Secure REST routes
   - name: rest-v1
