@@ -80,7 +80,6 @@ services:
     privileged: true
     ports:
       - "8081:8081"
-      - "3001:8081" # Map 3001 to 8081 for legacy frontend support
     environment:
       - LLAMA_SERVER_HOST=sparky
       - LLAMA_SERVER_PORT=8082
@@ -141,48 +140,68 @@ services:
   #      condition: service_healthy
 
   # ---------------------------------------------------------
-  # SERVICE 3: THE LUNGS
-  # GPU Fan Control Manager
+  # SERVICE 3a: HOST METRICS (Read-only)
+  # GPU/host metrics collection (runs on Ellie + Sparky)
   # ---------------------------------------------------------
-#  fan-manager:
-#    build:
-#      context: ./temper
-#      dockerfile: Dockerfile
-#    container_name: fan-manager
-#    hostname: ellie
-#    restart: always
-#    privileged: true
-#
-#    # cap_add:
-#    #   - SYS_ADMIN # May be needed for some hardware sensors/controls
-#    ports:
-#      - "127.0.0.1:3001:3001"
-#    environment:
-#      - FAN_SETPOINTS=50:30 70:65 78:95 80:100
-#      - POWER_SETPOINTS=70:230 80:175 85:125
-#      - LLAMA_HOST=llama-server
-#      - LLAMA_PORT=8082
-#      - LLAMA_API_KEY=${LLAMA_API_KEY}
-#      - LLAMA_API_PREFIX=/chat
-#      - METRICS_API_KEY=${METRICS_API_KEY}
-#      - SUPABASE_URL=http://kong:8000
-#      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-#
-#      - VERBOSE=1
-#    volumes:
-#      - /var/run/docker.sock:/var/run/docker.sock
-#      - llama_cache:/models
-#    networks:
-#      - default
-#      - ai-stack-net
-#    deploy:
-#      resources:
-#        reservations:
-#          devices:
-#            - driver: nvidia
-#              count: all
-#              capabilities: [gpu]
-#
+  host-metrics:
+    build:
+      context: ./temper
+      dockerfile: Dockerfile
+    container_name: host-metrics
+    hostname: ellie
+    restart: always
+    privileged: true
+    ports:
+      - "3001:3001"
+    environment:
+      - TEMPER_MODE=metrics
+      - LLAMA_HOST=vllm-server
+      - LLAMA_PORT=8000
+      - LLAMA_API_KEY=${LLAMA_API_KEY}
+      - LLAMA_API_PREFIX=/v1
+      - METRICS_API_KEY=${METRICS_API_KEY}
+      - SUPABASE_URL=http://kong:8000
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - VERBOSE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - llama_cache:/models
+    networks:
+      - default
+      - ai-stack-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # SERVICE 3b: FAN CONTROL (Active control)
+  # GPU fan/power control (runs ONLY on Ellie)
+  # ---------------------------------------------------------
+  fan-control:
+    build:
+      context: ./temper
+      dockerfile: Dockerfile
+    container_name: fan-control
+    hostname: ellie
+    restart: always
+    privileged: true
+    # NO PORTS - internal only, no HTTP API exposed
+    environment:
+      - TEMPER_MODE=fanctl
+      - FAN_SETPOINTS=50:30 70:65 78:95 80:100
+      - POWER_SETPOINTS=70:230 80:175 85:125
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   stripe-handler:
     build:
       context: ./stripe-handler
@@ -203,12 +222,12 @@ services:
       db:
         condition: service_healthy
 
-  temper-view:
+  ai-portal:
     build:
-      context: ./temper-view
+      context: ./ai-portal
       args:
         VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
-    container_name: temper-view
+    container_name: ai-portal
     restart: always
     ports:
       - "3000:80"

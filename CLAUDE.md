@@ -23,19 +23,33 @@ This is a **GPU-accelerated AI inference platform** with integrated billing, use
 - **llama.cpp**: CUDA-based LLM inference engine serving GLM-4.7-Flash and Nemotron-3-Nano models
 - **llama-proxy**: Python HTTP proxy providing authentication, model routing, and request rewriting
 - **temper**: C++ GPU telemetry and thermal control system (NVIDIA NVML)
-- **temper-view**: React 19 web dashboard for GPU monitoring and API management
+- **ai-portal**: React 19 web dashboard for GPU monitoring and API management
 - **stripe-handler**: FastAPI service for Stripe subscription billing
 - **supabase-ai**: PostgreSQL database with authentication backend
 
 ## Architecture
 
-```
-User → temper-view (Port 3000) → Nginx Reverse Proxy
-                                    ├→ /api → fan-manager (temper:3001)
-                                    ├→ /auth, /rest → Supabase Kong
-                                    └→ SPA assets
+### Distributed Monitoring (as of 2026-02-15)
 
-LLM Requests → llama-proxy (Port 8081) → llama-server (Port 8082)
+**Split Services Model**: The monolithic fan-manager has been split into two independent services:
+
+```
+ai-portal (Port 3000) → Nginx Reverse Proxy
+├─ /api/metrics → host-metrics:3001 (read-only GPU/host metrics)
+├─ /api/* → llama-proxy:8081 (model routing)
+├─ /auth, /rest → Supabase Kong
+└─ SPA assets
+
+[Ellie Host]
+├─ host-metrics (Port 3001): GPU/host metrics collection (read-only via NVML)
+├─ fan-control (internal): GPU fan/power control (writes via NVML)
+└─ ai-portal: Web dashboard with multi-host aggregation
+
+[Sparky Host]
+├─ host-metrics (Port 3001): GPU/host metrics collection (read-only)
+└─ (No fan control - vLLM handles resource management)
+
+LLM Requests → llama-proxy (Port 8081) → llama-server/vLLM (Port 8082/8000)
                     ↓                           ↓
               PostgreSQL DB                 CUDA GPUs
               (API key validation)          (model inference)
@@ -43,10 +57,22 @@ LLM Requests → llama-proxy (Port 8081) → llama-server (Port 8082)
 
 ### Key Data Flows
 
-1. **GPU Metrics**: temper polls NVML every 100ms → exposes `/metrics` JSON API → temper-view fetches and displays
-2. **LLM Inference**: Client sends request with API key → llama-proxy validates against DB → forwards to llama-server → streams response back
-3. **Authentication**: User logs in via Supabase Auth → JWT stored in browser → used for API key management and billing
-4. **Fan Control**: temper runs dynamic fan curves based on GPU/CPU temps and power limits in real-time control loop
+1. **GPU Metrics (Distributed)**:
+   - host-metrics on each host polls NVML every 100ms (read-only, no writes)
+   - Exposes `/metrics` JSON API on port 3001
+   - ai-portal fetches from both Ellie and Sparky endpoints in parallel
+   - Frontend aggregates multi-host metrics and displays per-host sections
+
+2. **Fan Control (Ellie Only)**:
+   - fan-control service runs privileged on Ellie only
+   - Monitors GPU temps and power via NVML reads
+   - Applies dynamic fan curves and power limits via NVML writes
+   - No HTTP API (internal monitoring only)
+   - Independent from metrics collection - failure doesn't affect monitoring
+
+3. **LLM Inference**: Client sends request with API key → llama-proxy validates against DB → forwards to llama-server/vLLM → streams response back
+
+4. **Authentication**: User logs in via Supabase Auth → JWT stored in browser → used for API key management and billing
 
 ## Common Development Commands
 
@@ -57,12 +83,14 @@ LLM Requests → llama-proxy (Port 8081) → llama-server (Port 8082)
 docker compose up -d
 
 # Rebuild specific service after code changes
-docker compose up -d --build fan-manager
-docker compose up -d --build temper-view
-docker compose up -d --build llama-proxy
+docker compose up -d --build host-metrics    # Read-only metrics (Ellie + Sparky)
+docker compose up -d --build fan-control     # Active fan control (Ellie only)
+docker compose up -d --build ai-portal     # Web dashboard
+docker compose up -d --build llama-proxy     # Model router
 
 # View logs
-docker compose logs -f fan-manager
+docker compose logs -f host-metrics
+docker compose logs -f fan-control
 docker compose logs -f llama-server
 docker compose logs -f llama-proxy
 
@@ -76,8 +104,8 @@ docker compose logs -f llama-proxy
 ### Testing Individual Components
 
 ```bash
-# Test temper metrics API
-curl -s http://localhost:3001/metrics | jq .
+# Test host-metrics API (requires METRICS_API_KEY from .env)
+curl -s -H "x-api-key: $METRICS_API_KEY" http://localhost:3001/metrics | jq .
 
 # Test llama-server health (requires LLAMA_API_KEY from .env)
 curl -H "Authorization: Bearer $LLAMA_API_KEY" http://localhost:8082/chat/health
@@ -96,7 +124,7 @@ cd temper && make clean && make
 
 ```bash
 # Start dev server with hot reload
-cd temper-view
+cd ai-portal
 npm install
 npm run dev  # Runs on port 5173
 
@@ -143,31 +171,58 @@ IDRAC_PASS=...
 ```
 
 ### `/docker-compose.yml`
-Fan control setpoints (environment variables for `fan-manager`):
+Control setpoints (environment variables):
 ```bash
-FAN_SETPOINTS=50:30 70:65 78:95 80:100           # GPU temp(°C):fan%
-CHASSIS_FAN_SETPOINTS=45:20 55:30 65:70 75:100  # CPU temp:chassis fan%
+# host-metrics service (read-only, no controls)
+TEMPER_MODE=metrics                             # Read-only mode (no fan/power writes)
+
+# fan-control service (active control, Ellie only)
+TEMPER_MODE=fanctl                              # Active fan control mode
+FAN_SETPOINTS=50:30 70:65 78:95 80:100          # GPU temp(°C):fan%
 POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 ```
 
 ## Component-Specific Details
 
-### temper (C++ GPU Control)
+### temper (C++ GPU Monitoring & Control)
+
+**Split Architecture**: Now supports two independent modes via `TEMPER_MODE` environment variable
 
 **Build**: Makefile with NVML dependency detection
 - Sources: `src/main.cpp`, `NVMLManager.cpp`, `CurveController.cpp`, `IpmiController.cpp`, `MetricServer.cpp`, `HostMonitor.cpp`, `LlamaMonitor.cpp`
 - Output: `build/temper` binary
 - Docker: Runs privileged with GPU passthrough and CUDA 13.1 base
+- Entrypoint: `entrypoint.sh` selects mode based on `TEMPER_MODE` environment variable
+
+**Dual Modes**:
+
+1. **metrics mode** (host-metrics service):
+   - Read-only GPU/host data collection via NVML
+   - Exposes `/metrics` JSON API on port 3001
+   - NO fan speed writes, NO power limit writes
+   - Runs on both Ellie and Sparky
+   - Lightweight (just polling and serving data)
+
+2. **fanctl mode** (fan-control service):
+   - Active GPU fan and power control
+   - Reads temperatures and applies control curves
+   - Writes fan speeds and power limits via NVML
+   - Runs only on Ellie (Sparky doesn't need fan control)
+   - No HTTP API (internal monitoring only)
+   - Reactive fallback: Cuts power to minimum if thermal throttling detected
 
 **Key Classes**:
-- `NVMLManager`: Wraps NVIDIA NVML library for GPU queries
-- `CurveController`: Applies dynamic fan curves and power limits (runs in tight loop)
-- `IpmiController`: Communicates with iDRAC for chassis fan control via IPMItool
-- `MetricServer`: HTTP server exposing `/metrics` JSON endpoint on port 3001
-- `LlamaMonitor`: Polls llama-server for workload status and KV cache usage
-- `HostMonitor`: Reads CPU temp, RAM usage, uptime from /proc and /sys
+- `NVMLManager`: Wraps NVIDIA NVML library for GPU queries and writes
+- `CurveController`: Interpolates fan/power curves (fanctl mode only)
+- `MetricServer`: HTTP server exposing `/metrics` JSON endpoint on port 3001 (metrics mode only)
+- `LlamaMonitor`: Polls llama-server for workload status (fanctl mode only; metrics mode skips this)
+- `HostMonitor`: Reads CPU temp, RAM usage, uptime from /proc and /sys (both modes)
 
 **API Schema**: See `temper/API.md` for full `/metrics` response structure (100+ fields)
+
+**Deployment**:
+- Ellie runs both: `host-metrics` (port 3001) and `fan-control` (internal)
+- Sparky runs only: `host-metrics` (port 3001)
 
 ### llama-proxy (Python Gateway)
 
@@ -179,7 +234,7 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 
 **Dependencies**: Python 3.11, psycopg2, HTTP server stdlib
 
-### temper-view (React Frontend)
+### ai-portal (React Frontend)
 
 **Tech Stack**:
 - React 19.2.3 with TypeScript
@@ -213,11 +268,17 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 ## Security Considerations
 
 - **API Keys**: User keys stored in PostgreSQL `api_keys` table, validated on every llama-proxy request
-- **Internal Auth**: `LLAMA_API_KEY` protects llama-server from direct access (only llama-proxy and temper know it)
-- **Metrics Auth**: `METRICS_API_KEY` required for accessing temper's `/metrics` endpoint
+- **Internal Auth**: `LLAMA_API_KEY` protects llama-server from direct access (only llama-proxy knows it)
+- **Metrics Auth**: `METRICS_API_KEY` required for accessing host-metrics `/metrics` endpoint
 - **CSP Headers**: Nginx applies Content Security Policy allowing only trusted origins
-- **Network Isolation**: llama-server and temper only accessible via internal Docker network (127.0.0.1 binding or no external port)
+- **Network Isolation**:
+  - llama-server binds to 127.0.0.1 only (internal network)
+  - fan-control has no HTTP API (no network exposure)
+  - host-metrics port 3001 exposed only within Docker network and firewall
 - **Stripe Webhooks**: Validated via `STRIPE_WEBHOOK_SECRET` before processing subscription events
+- **Privilege Separation**:
+  - host-metrics runs privileged for NVML read access (non-destructive)
+  - fan-control runs privileged for NVML write access (fan/power control only)
 
 ## Hardware Requirements
 
@@ -228,10 +289,11 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 
 ## Troubleshooting
 
-### GPU not detected in temper
+### GPU not detected in host-metrics or fan-control
 - Verify `docker compose` includes `deploy.resources.reservations.devices` with nvidia driver
 - Check `nvidia-smi` works on host
 - Ensure NVIDIA Container Toolkit is installed
+- Restart service: `docker compose up -d --build host-metrics` or `fan-control`
 
 ### Model loading fails in llama-server
 - Check `models.ini` paths match filenames in `llama_cache` volume
@@ -245,15 +307,27 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 - Ensure PostgreSQL is healthy: `docker compose ps db`
 
 ### Frontend not loading
-- Check Nginx logs: `docker compose logs temper-view`
+- Check Nginx logs: `docker compose logs ai-portal`
 - Verify environment variables passed to container
 - Test direct API access: `curl http://localhost:3001/metrics`
 
 ### Fan control not working
 - Requires root/privileged mode in Docker
-- Check NVML initialization in logs
-- Verify `FAN_SETPOINTS` environment variable format
+- Check NVML initialization in logs: `docker logs fan-control`
+- Verify `FAN_SETPOINTS` environment variable format: `50:30 70:65 78:95 80:100`
 - IPMI control requires network access to `IDRAC_IP`
+- fan-control service fails silently if fan-speed writes aren't supported; check GPU compatibility
+
+### host-metrics returns 401 Unauthorized
+- Verify `METRICS_API_KEY` is set in `.env`
+- Check request header: must be `x-api-key: <key>` or `Authorization: Bearer <key>` (case-insensitive)
+- Test directly: `curl -H "x-api-key: $METRICS_API_KEY" http://localhost:3001/metrics`
+
+### Multi-host metrics not aggregating
+- Verify Sparky's host-metrics is running: `docker compose ps` on Sparky
+- Test Sparky endpoint from Ellie: `curl http://10.20.10.10:3001/metrics -H "x-api-key: ..."`
+- Check frontend console for fetch errors: open http://ellie:3000/ and check browser console
+- Frontend default includes both `/api` (local) and `http://10.20.10.10:3001` (Sparky)
 
 ## Development Workflow
 
@@ -265,7 +339,7 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 4. **Check logs** for errors: `docker compose logs -f <service-name>`
 5. **Commit** changes following git workflow in [AGENTS.md](./docs/AGENTS.md#3-git-workflow)
 
-For frontend changes, use `npm run dev` in `temper-view/` for hot reload during development.
+For frontend changes, use `npm run dev` in `ai-portal/` for hot reload during development.
 
 **IMPORTANT: See [AGENTS.md](./docs/AGENTS.md) for:**
 - Comprehensive testing protocols

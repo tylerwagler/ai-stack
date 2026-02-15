@@ -6,7 +6,7 @@
 	path = temper
 	url = https://github.com/tylerwagler/temper.git
 	branch = master
-[submodule "temper-view"]
-	path = temper-view
+[submodule "ai-portal"]
+	path = ai-portal
 	url = https://github.com/tylerwagler/temper-view.git
 	branch = master
