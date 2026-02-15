@@ -1,0 +1,67 @@
+services:
+  # ---------------------------------------------------------
+  # HOST METRICS (Port 3001, read-only)
+  # GPU/host metrics collection via pynvml + psutil
+  # ---------------------------------------------------------
+  host-metrics:
+    build:
+      context: ./host-metrics
+    container_name: host-metrics
+    hostname: sparky
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      - METRICS_API_KEY=${METRICS_API_KEY}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # vLLM Inference Engine (Port 8000)
+  # Serves GLM-4.7-Flash-AWQ with runtime patches
+  # ---------------------------------------------------------
+  vllm-server:
+    image: vllm-node-tf5:latest
+    container_name: vllm-server
+    restart: always
+    ipc: host
+    ports:
+      - "8000:8000"
+    volumes:
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
+      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
+      - /home/tyler/.triton:/root/.triton
+      - ./spark-vllm-docker/mods/fix-glm-4.7-flash-AWQ:/mods/fix-glm-4.7-flash-AWQ:ro
+    environment:
+      - NCCL_IGNORE_CPU_AFFINITY=1
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Applying GLM-4.7-Flash-AWQ patches..."
+        cd /mods/fix-glm-4.7-flash-AWQ && bash run.sh || echo "Patch not applicable, skipping"
+        echo "Starting vLLM..."
+        exec vllm serve cyankiwi/GLM-4.7-Flash-AWQ-4bit \
+          --tool-call-parser glm47 \
+          --reasoning-parser glm45 \
+          --enable-auto-tool-choice \
+          --served-model-name glm-4.7-flash \
+          --max-model-len 202752 \
+          --max-num-batched-tokens 4096 \
+          --max-num-seqs 64 \
+          --gpu-memory-utilization 0.7 \
+          -tp 1 \
+          --host 0.0.0.0 \
+          --port 8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
