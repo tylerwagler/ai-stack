@@ -34,19 +34,8 @@ DB_PASS = os.environ.get("POSTGRES_PASSWORD", "")
 DB_HOST = os.environ.get("POSTGRES_HOST", "db")
 DB_PORT = os.environ.get("POSTGRES_PORT", "5432")
 
-# Backend Configuration
-BACKENDS = {
-    "llama": {
-        "url": f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}{LLAMA_API_PREFIX}",
-        "name": "llama-server",
-        "key": "llama"
-    },
-    "vllm": {
-        "url": f"http://{VLLM_SERVER_HOST}:{VLLM_SERVER_PORT}/v1",
-        "name": "vllm-server",
-        "key": "vllm"
-    }
-}
+# Legacy fallback backend URL (used only if no model config found)
+FALLBACK_VLLM_URL = f"http://{VLLM_SERVER_HOST}:{VLLM_SERVER_PORT}/v1"
 
 # DB Connection Pool
 db_pool = None
@@ -407,6 +396,8 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
                                     "name": m["id"],
                                     "alias": m["name"],
                                     "backend": m["backend"],
+                                    "host": m["host"],
+                                    "is_local": m["is_local"],
                                     "status": "active" if m["is_active"] else "ready"
                                 })
                             
@@ -500,68 +491,59 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length) if content_length > 0 else None
                 
-                # Routing Logic
-                model_name = "unknown"
+                # Routing Logic — resolve model from request body
                 is_streaming = False
-                
-                # Default Logic: Use current model
-                state = model_manager.get_status()
-                current_config = state.get('current_model')
-                
-                # If no model loaded, check if we can auto-load user request?
-                # For now, just error if nothing running?
-                # Or default to 'llama' if we assume single-tenant
-                
+                model_config = None
+
                 if body and self.headers.get('Content-Type') == 'application/json':
                     try:
                         data = json.loads(body)
                         requested_model = data.get('model', '')
                         is_streaming = data.get('stream', False)
 
-                        # If user requests specific model, check if it matches current
-                        if requested_model and current_config:
-                            # Loose match on alias or ID
-                            if requested_model != current_config['id'] and requested_model != current_config['name']:
-                                # Auto-switch? Maybe for system key?
-                                # For now, just log and allow if backend is compatible or ignore?
-                                # OpenAI API often ignores model name if only one backend.
-                                pass 
-                                
-                        # Use current config to determine backend
-                        if current_config:
-                             backend_key = current_config['backend']
-                             backend_url = BACKENDS[backend_key]['url']
-                             backend_name = BACKENDS[backend_key]['name']
-                             
-                             # vLLM requires exact model path in request body sometimes?
-                             # Or we just overwrite it with what is actually running
-                             if backend_key == 'vllm':
-                                 data['model'] = current_config['path'] # Use full path for vLLM
-                             
-                             body = json.dumps(data).encode('utf-8')
-                        else:
-                             # Fallback / Error
-                             self.send_error_json(503, "No model loaded")
-                             return
+                        # Look up model in registry by id, alias, or HF path
+                        if requested_model:
+                            model_config = model_registry.find_model(requested_model)
+
+                        # Fall back to the currently-loaded local model
+                        if not model_config:
+                            state = model_manager.get_status()
+                            cid = state.get('current_model_id')
+                            if cid:
+                                model_config = model_registry.get_model(cid)
+
+                        if not model_config:
+                            self.send_error_json(503, "No model found for request")
+                            return
+
+                        # Rewrite model field to the full HF path (vLLM requirement)
+                        if model_config.backend == 'vllm':
+                            data['model'] = model_config.path
+
+                        body = json.dumps(data).encode('utf-8')
 
                     except Exception as e:
                         print(f"Proxy Error parsing JSON: {e}", file=sys.stderr)
 
-                if not current_config:
-                     self.send_error_json(503, "No model loaded")
-                     return
+                # For non-JSON requests (e.g. GET /v1/models), fall back to current model
+                if not model_config:
+                    state = model_manager.get_status()
+                    cid = state.get('current_model_id')
+                    if cid:
+                        model_config = model_registry.get_model(cid)
 
-                backend_key = current_config['backend']
-                backend_url = BACKENDS[backend_key]['url']
-                target_backend_name = BACKENDS[backend_key]['name']
+                if not model_config:
+                    self.send_error_json(503, "No model loaded")
+                    return
 
-                # Prepare forwarded request
-                # Handle vLLM /v1 prefix issues
+                # Build target URL from per-model host
+                backend_url = model_config.base_url
+
+                # Strip /v1 prefix from path since base_url already includes it
                 forward_path = self.path
-                if target_backend_name == 'vllm-server':
-                     if self.path.startswith('/v1'):
-                         forward_path = self.path.replace('/v1', '', 1)
-                
+                if self.path.startswith('/v1'):
+                    forward_path = self.path[3:]  # remove '/v1'
+
                 url = f"{backend_url}{forward_path}"
 
                 print(f"Proxy Forwarding: {self.command} {self.path} -> {url}", file=sys.stderr)

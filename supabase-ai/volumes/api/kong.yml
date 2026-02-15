@@ -62,10 +62,37 @@ services:
           - /auth/v1/authorize
     plugins:
       - name: cors
+  - name: auth-v1-open-signup
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-open-signup
+        strip_path: true
+        paths:
+          - /auth/v1/signup
+    plugins:
+      - name: cors
+  - name: auth-v1-open-login
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-open-login
+        strip_path: true
+        paths:
+          - /auth/v1/token
+    plugins:
+      - name: cors
+  - name: auth-v1-open-refresh
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-open-refresh
+        strip_path: true
+        paths:
+          - /auth/v1/token
+    plugins:
+      - name: cors
 
   ## Secure Auth routes
   - name: auth-v1
-    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/*'
+    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/* (auth service handles own auth)'
     url: http://auth:9999/
     routes:
       - name: auth-v1-all
@@ -74,15 +101,6 @@ services:
           - /auth/v1/
     plugins:
       - name: cors
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
 
   ## Secure REST routes
   - name: rest-v1

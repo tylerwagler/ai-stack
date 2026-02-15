@@ -19,21 +19,21 @@ class ModelManager:
     def __init__(self, registry: ModelRegistry, backend_manager: BackendManager):
         self.registry = registry
         self.backend_manager = backend_manager
-        
-        # State
+
+        # State (tracks the locally-loaded model only)
         self.current_model_id: Optional[str] = None
         self.target_model_id: Optional[str] = None
         self.status: ModelStatus = ModelStatus.OFFLINE
         self.last_error: Optional[str] = None
         self.state_changed_at: float = time.time()
-        
+
         # Initialize registry
         self.registry.load_models()
 
     def get_status(self) -> Dict[str, Any]:
         """Return the current state of the model manager"""
         current_config = self.registry.get_model(self.current_model_id) if self.current_model_id else None
-        
+
         return {
             "status": self.status.value,
             "current_model_id": self.current_model_id,
@@ -41,34 +41,43 @@ class ModelManager:
             "current_model": {
                 "id": current_config.id,
                 "name": current_config.name,
-                "backend": current_config.backend
+                "backend": current_config.backend,
+                "host": current_config.host,
             } if current_config else None,
             "last_error": self.last_error,
             "uptime_seconds": time.time() - self.state_changed_at if self.status == ModelStatus.RUNNING else 0
         }
 
     def list_models(self):
-        """Return list of available models with their backend config"""
-        return [
-            {
+        """Return list of available models with host info."""
+        models = []
+        for m in self.registry.list_models():
+            is_active = (m.id == self.current_model_id) if m.is_local else True
+            models.append({
                 "id": m.id,
                 "name": m.name,
                 "backend": m.backend,
                 "path": m.path,
-                "is_active": m.id == self.current_model_id
-            }
-            for m in self.registry.list_models()
-        ]
+                "host": m.host,
+                "is_local": m.is_local,
+                "is_active": is_active,
+            })
+        return models
 
     def switch_model(self, model_id: str) -> bool:
-        """Initiate valid state transition to switch model"""
+        """Initiate valid state transition to switch model (local models only)."""
         logger.info(f"Requested switch to model: {model_id}")
-        
+
         # 1. Validate Model
         config = self.registry.get_model(model_id)
         if not config:
             self._set_error(f"Model {model_id} not found in registry")
             return False
+
+        # Remote models can't be switched from here
+        if not config.is_local:
+            logger.info(f"Model {model_id} is remote ({config.host}), no local switch needed.")
+            return True
 
         # 2. Check if already running
         if self.current_model_id == model_id and self.status == ModelStatus.RUNNING:
@@ -82,12 +91,11 @@ class ModelManager:
 
         try:
             # 4. Delegate to BackendManager
-            # This is synchronous for now, but could be async
             success = self.backend_manager.switch_backend(config.backend, config.path)
-            
+
             if success:
                 self.current_model_id = model_id
-                self._set_status(ModelStatus.RUNNING) # TODO: Ideally wait for /health?
+                self._set_status(ModelStatus.RUNNING)
                 self.target_model_id = None
                 return True
             else:
@@ -106,14 +114,10 @@ class ModelManager:
 
         self._set_status(ModelStatus.STOPPING)
         try:
-            # We don't have a stop_backend method yet, but we can just use the backend manager
-            # to stop everything? Or keep the backend running but "unload"?
-            # For now, let's assume we just mark it as offline.
-            # Real implementation might call `backend_manager.stop_all()`
-            pass 
+            pass
         except Exception as e:
             logger.error(f"Error stopping model: {e}")
-        
+
         self.current_model_id = None
         self._set_status(ModelStatus.OFFLINE)
 
