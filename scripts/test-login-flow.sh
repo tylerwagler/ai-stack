@@ -9,7 +9,7 @@ echo "Testing claude-local login flow..."
 echo ""
 
 # Configuration
-# Supabase is exposed via temper-view (port 3000), not llama-proxy (port 8081)
+# Supabase is exposed via temper-view (port 3000), not ai-proxy (port 8081)
 SUPABASE_URL="http://10.20.10.5:3000"
 LLAMA_PROXY_URL="http://10.20.10.5:8081"
 ANON_KEY="eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJyb2xlIjogImFub24iLCAiaXNzIjogInN1cGFiYXNlIiwgImlhdCI6IDE3Njk1MjYyNTgsICJleHAiOiAyMDg0ODg2MjU4fQ.UYjtcXHj4l-9rEHMzNk2rqc-djmaPTtumgylFpG5NfA"

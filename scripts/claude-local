@@ -38,7 +38,7 @@ login_and_get_key() {
     local email="$1"
     local password="$2"
 
-    # Supabase is exposed via temper-view on port 3000, NOT llama-proxy on 8081
+    # Supabase is exposed via temper-view on port 3000, NOT ai-proxy on 8081
     # The Nginx reverse proxy routes /auth/v1/ and /rest/v1/ to Supabase Kong
     # Use localhost if running on the AI Stack host
     [ -n "$DEBUG" ] && echo "Debug: hostname=$(hostname), AI_STACK_HOST=$AI_STACK_HOST" >&2

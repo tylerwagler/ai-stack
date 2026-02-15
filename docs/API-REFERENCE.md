@@ -3,14 +3,14 @@
 **Last Updated:** 2026-02-02
 **System Version:** v1.0
 
-This document provides complete reference for all API endpoints in the ai-stack system, including llama-server, temper, llama-proxy, and nginx-proxied endpoints.
+This document provides complete reference for all API endpoints in the ai-stack system, including llama-server, temper, ai-proxy, and nginx-proxied endpoints.
 
 ## Table of Contents
 
 1. [Authentication Overview](#authentication-overview)
 2. [llama-server Endpoints](#llama-server-endpoints)
 3. [temper Endpoints](#temper-endpoints)
-4. [llama-proxy Endpoints](#llama-proxy-endpoints)
+4. [ai-proxy Endpoints](#ai-proxy-endpoints)
 5. [nginx/temper-view Endpoints](#nginxtemper-view-endpoints)
 6. [Error Responses](#error-responses)
 7. [Data Types](#data-types)
@@ -24,7 +24,7 @@ The ai-stack uses three distinct API keys for different purposes:
 |---------|---------|---------|---------------|
 | `LLAMA_API_KEY` | Internal llama-server auth | temper, healthchecks | `Authorization: Bearer {key}` |
 | `METRICS_API_KEY` | Protect temper metrics | nginx, direct clients | `X-API-Key: {key}` |
-| User API keys | User authentication | End users via llama-proxy | `Authorization: Bearer {key}` |
+| User API keys | User authentication | End users via ai-proxy | `Authorization: Bearer {key}` |
 
 ### Getting API Keys
 
@@ -500,7 +500,7 @@ curl -H "X-API-Key: $METRICS_API_KEY" \
 
 ---
 
-## llama-proxy Endpoints
+## ai-proxy Endpoints
 
 **Base URL:** `http://localhost:8081`
 **Authentication:** All endpoints require user API key in `Authorization: Bearer {user_api_key}`
@@ -570,7 +570,7 @@ data: [DONE]
 
 **Model Name Translation:**
 
-llama-proxy automatically translates model names:
+ai-proxy automatically translates model names:
 - `claude-3-5-sonnet-20241022` → Configured model (glm/nemotron)
 - `claude-3-5-haiku-20241022` → Configured model
 - Other names → Passed through as-is
@@ -786,7 +786,7 @@ interface KVCache {
 
 ## Rate Limiting
 
-### llama-proxy
+### ai-proxy
 
 - **API Key Validation:** Cached for 60 seconds per key
 - **Request Rate:** Limited by slot availability (4 concurrent requests)
@@ -820,9 +820,9 @@ docker compose logs -f fan-manager
 docker compose logs -f llama-server
 ```
 
-**llama-proxy:**
+**ai-proxy:**
 ```bash
-docker compose logs -f llama-proxy
+docker compose logs -f ai-proxy
 ```
 
 ### Test Authentication

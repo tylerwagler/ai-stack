@@ -10,21 +10,11 @@ import time
 from datetime import datetime, timedelta
 import threading
 
-# Import new modules
-from hardware import HardwareMonitor, FanController
-from backend_manager import BackendManager
-from vllm_metrics import VLLMMetricsParser
 from model_registry import ModelRegistry
 from model_manager import ModelManager
 
 # Configuration from environment
-LLAMA_SERVER_HOST = os.environ.get("LLAMA_SERVER_HOST", "llama-server")
-LLAMA_SERVER_PORT = os.environ.get("LLAMA_SERVER_PORT", "8082")
-VLLM_SERVER_HOST = os.environ.get("VLLM_SERVER_HOST", "vllm-server")
-VLLM_SERVER_PORT = os.environ.get("VLLM_SERVER_PORT", "8000")
-
 PORT = int(os.environ.get("PROXY_PORT", "8081"))
-LLAMA_API_PREFIX = os.environ.get("LLAMA_API_PREFIX", "")
 LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY", "")
 
 # DB Config
@@ -34,28 +24,16 @@ DB_PASS = os.environ.get("POSTGRES_PASSWORD", "")
 DB_HOST = os.environ.get("POSTGRES_HOST", "db")
 DB_PORT = os.environ.get("POSTGRES_PORT", "5432")
 
-# Legacy fallback backend URL (used only if no model config found)
-FALLBACK_VLLM_URL = f"http://{VLLM_SERVER_HOST}:{VLLM_SERVER_PORT}/v1"
-
 # DB Connection Pool
 db_pool = None
 
 # Cache valid keys for 60 seconds
 KEY_CACHE = {}
-CACHE_TTL = 30 
+CACHE_TTL = 30
 
-# Initialize Managers
-hardware_monitor = HardwareMonitor()
-fan_controller = FanController(hardware_monitor)
-
-# New Model Management Stack
-backend_manager = BackendManager()
-model_registry = ModelRegistry() # Loads models.ini
-model_manager = ModelManager(model_registry, backend_manager)
-vllm_parser = VLLMMetricsParser()
-
-# Start Fan Controller
-fan_controller.start()
+# Model Management
+model_registry = ModelRegistry()
+model_manager = ModelManager(model_registry)
 
 def get_db_conn():
     try:
@@ -283,52 +261,12 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
 
                 if self.path == '/system/status' or self.path == '/metrics':
                     try:
-                        gpu_metrics = hardware_monitor.get_gpu_metrics()
-                        host_metrics = hardware_monitor.get_host_metrics()
-                        backend_status = backend_manager.get_status()
                         model_state = model_manager.get_status()
-                        
-                        # Fetch active model info
-                        current_config = model_state.get('current_model')
-                        
-                        # Check if we should use vLLM metrics
-                        vllm_metrics = None
-                        if current_config and current_config.get('backend') == 'vllm':
-                            vllm_metrics = vllm_parser.get_metrics()
-
-                        if vllm_metrics:
-                            ai_service = vllm_metrics
-                            # Ensure model name is correct alias
-                            ai_service["modelName"] = current_config.get('name')
-                            ai_service["modelPath"] = current_config.get('id')
-                            ai_service["status"] = model_state.get('status')
-                            ai_service["backend_status"] = backend_status
-                        else:
-                            # Mock "ai_service" status for frontend compatibility (Llama style or Generic)
-                            ai_service = {
-                                "status": model_state.get('status', 'offline'), 
-                                "backend_status": backend_status,
-                                "modelName": current_config.get('name') if current_config else "none",
-                                "modelPath": current_config.get('id') if current_config else "none",
-                                "targetModel": model_state.get('target_model_id'),
-                                "load_progress": 100 if model_state.get('status') == 'running' else 0,
-                                "slots_used": 0,
-                                "slots_total": 1,
-                                "n_ctx": 2048 
-                            }
-
-                        response = {
-                            "host": host_metrics,
-                            "ai_service": ai_service,
-                            "gpus": gpu_metrics,
-                            "model_manager": model_state
-                        }
-                        
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
                         self.send_header('Access-Control-Allow-Origin', '*')
                         self.end_headers()
-                        self.wfile.write(json.dumps(response).encode())
+                        self.wfile.write(json.dumps(model_state).encode())
                     except Exception as e:
                         self.send_error_json(500, f"System Status Error: {str(e)}")
                     return

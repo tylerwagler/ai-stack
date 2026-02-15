@@ -1,10 +1,10 @@
 #!/bin/bash
-# rotate-logs.sh - Rotate llama-proxy logs
+# rotate-logs.sh - Rotate ai-proxy logs
 # Version: 1.0
 # Usage: ./rotate-logs.sh
 # Recommended: Add to crontab for daily execution
 
-LOG_DIR="/home/tyler/ai-stack/llama-proxy/logs"
+LOG_DIR="/home/tyler/ai-stack/ai-proxy/logs"
 RETENTION_DAYS=30
 ARCHIVE_AFTER_DAYS=7
 

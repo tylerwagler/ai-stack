@@ -3,7 +3,6 @@ import time
 from enum import Enum
 from typing import Optional, Dict, Any
 from model_registry import ModelRegistry, ModelConfig
-from backend_manager import BackendManager
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +15,8 @@ class ModelStatus(Enum):
     ERROR = "error"
 
 class ModelManager:
-    def __init__(self, registry: ModelRegistry, backend_manager: BackendManager):
+    def __init__(self, registry: ModelRegistry):
         self.registry = registry
-        self.backend_manager = backend_manager
 
         # State (tracks the locally-loaded model only)
         self.current_model_id: Optional[str] = None
@@ -84,28 +82,11 @@ class ModelManager:
             logger.info(f"Model {model_id} is already running.")
             return True
 
-        # 3. Update State
-        self._set_status(ModelStatus.STARTING)
-        self.target_model_id = model_id
-        self.last_error = None
-
-        try:
-            # 4. Delegate to BackendManager
-            success = self.backend_manager.switch_backend(config.backend, config.path)
-
-            if success:
-                self.current_model_id = model_id
-                self._set_status(ModelStatus.RUNNING)
-                self.target_model_id = None
-                return True
-            else:
-                self._set_error(f"Backend failed to start for {model_id}")
-                return False
-
-        except Exception as e:
-            logger.exception("Error during model switch")
-            self._set_error(str(e))
-            return False
+        # 3. Update routing state (actual backend lifecycle managed by docker compose)
+        self.current_model_id = model_id
+        self._set_status(ModelStatus.RUNNING)
+        self.target_model_id = None
+        return True
 
     def stop_model(self):
         """Stop current model"""

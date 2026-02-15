@@ -64,11 +64,11 @@ Same interactive flow as Linux.
 
 ### Authentication Endpoints
 
-**IMPORTANT**: Supabase is exposed through temper-view (port 3000), NOT llama-proxy (port 8081)
+**IMPORTANT**: Supabase is exposed through temper-view (port 3000), NOT ai-proxy (port 8081)
 
 - **Auth URL**: `http://{AI_STACK_IP}:3000/auth/v1/token?grant_type=password`
 - **REST API**: `http://{AI_STACK_IP}:3000/rest/v1/api_keys`
-- **LLM Inference**: `http://{AI_STACK_IP}:8081/v1/chat/completions` (llama-proxy)
+- **LLM Inference**: `http://{AI_STACK_IP}:8081/v1/chat/completions` (ai-proxy)
 - **Method**: Supabase JWT authentication
 
 The temper-view Nginx reverse proxy routes:

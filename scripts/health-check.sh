@@ -90,7 +90,7 @@ fi
 echo ""
 echo "Checking service status..."
 SERVICES_DOWN=0
-for service in llama-server llama-proxy fan-manager temper-view ai-supabase-db-1; do
+for service in llama-server ai-proxy fan-manager temper-view ai-supabase-db-1; do
     if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
         echo -e "${GREEN}✅ OK: $service is running${NC}"
     else

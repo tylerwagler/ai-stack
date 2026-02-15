@@ -186,7 +186,7 @@ fi
 
 # Test 12: Docker secrets in environment
 echo -e "${YELLOW}Test 12: Secrets in Docker environment variables...${NC}"
-SECRETS_IN_ENV=$(docker inspect llama-proxy 2>/dev/null | grep -i "password\|secret\|key" | grep -v "POSTGRES_PASSWORD" | grep -v "API_KEY" | wc -l || echo "0")
+SECRETS_IN_ENV=$(docker inspect ai-proxy 2>/dev/null | grep -i "password\|secret\|key" | grep -v "POSTGRES_PASSWORD" | grep -v "API_KEY" | wc -l || echo "0")
 if [ "$SECRETS_IN_ENV" -gt 5 ]; then
     test_status 1 "Excessive secrets visible in Docker environment"
 else

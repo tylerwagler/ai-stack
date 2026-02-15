@@ -1,1 +1,1 @@
-# Test package for llama-proxy
+# Test package for ai-proxy

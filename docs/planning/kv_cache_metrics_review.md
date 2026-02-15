@@ -474,7 +474,7 @@ export function SlotKVCacheTable() {
   const { data: slots } = useQuery({
     queryKey: ['slots'],
     queryFn: async () => {
-      const response = await fetch('/api/slots'); // Via llama-proxy
+      const response = await fetch('/api/slots'); // Via ai-proxy
       return response.json();
     },
     refetchInterval: 500,
@@ -513,10 +513,10 @@ export function SlotKVCacheTable() {
 
 ### API Proxy Configuration
 
-llama-proxy needs to forward `/slots` requests to llama-server:
+ai-proxy needs to forward `/slots` requests to llama-server:
 
 ```python
-# In llama-proxy (Python HTTP proxy)
+# In ai-proxy (Python HTTP proxy)
 @app.route('/slots', methods=['GET'])
 def get_slots():
     # Validate API key (existing auth logic)

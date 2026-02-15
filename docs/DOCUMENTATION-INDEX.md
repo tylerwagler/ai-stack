@@ -25,7 +25,7 @@ This document provides a comprehensive guide to all documentation, scripts, and 
 | `temper/README.md` | C++ GPU control system documentation |
 | `temper-view/README.md` | React frontend documentation |
 | `llama.cpp/README.md` | LLM inference engine documentation |
-| `llama-proxy/proxy.py` | Inline code documentation |
+| `ai-proxy/proxy.py` | Inline code documentation |
 
 ---
 
@@ -102,7 +102,7 @@ This document provides a comprehensive guide to all documentation, scripts, and 
 | Service | Port | External Access | Auth Required |
 |---------|------|-----------------|---------------|
 | temper-view | 3000 | ✅ HTTP | Supabase JWT |
-| llama-proxy | 8081 | ✅ HTTP | API Key (database) |
+| ai-proxy | 8081 | ✅ HTTP | API Key (database) |
 | llama-server | 8082 | ❌ Internal | LLAMA_API_KEY |
 | fan-manager | 3001 | ❌ Localhost | METRICS_API_KEY |
 | Supabase Kong | 8004 | ✅ HTTP | JWT tokens |
@@ -199,7 +199,7 @@ curl -s -H "X-API-Key: $METRICS_API_KEY" http://localhost:3001/metrics | jq .
 
 ### Internal Resources
 - Git Repository: `/home/tyler/ai-stack`
-- Log Directory: `/home/tyler/ai-stack/llama-proxy/logs`
+- Log Directory: `/home/tyler/ai-stack/ai-proxy/logs`
 - Backup Directory: `/home/tyler/ai-stack/backups`
 - Docker Volumes: `ai-stack_llama_cache`, `open-webui_data`
 

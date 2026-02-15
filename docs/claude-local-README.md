@@ -320,12 +320,12 @@ These are set automatically by the scripts:
 
 ### Ports Required
 
-The login feature uses **port 3000** (temper-view) for authentication, which is separate from port 8081 (llama-proxy) used for LLM inference.
+The login feature uses **port 3000** (temper-view) for authentication, which is separate from port 8081 (ai-proxy) used for LLM inference.
 
 **Firewall rules needed:**
 ```bash
 # For LLM inference (always required)
-Port 8081 - llama-proxy (OpenAI-compatible API)
+Port 8081 - ai-proxy (OpenAI-compatible API)
 
 # For login feature (required if using --login)
 Port 3000 - temper-view (Supabase auth + REST API)
@@ -340,12 +340,12 @@ Login Flow:
                            └→ /rest/v1/* → PostgreSQL (API keys)
 
 Inference Flow:
-  claude-local "prompt" → Port 8081 (llama-proxy) → Port 8082 (llama-server)
+  claude-local "prompt" → Port 8081 (ai-proxy) → Port 8082 (llama-server)
 ```
 
 **Important**: Both ports route through different services:
 - **Port 3000**: temper-view with Nginx reverse proxy to Supabase
-- **Port 8081**: llama-proxy for LLM requests only
+- **Port 8081**: ai-proxy for LLM requests only
 
 If you **only have port 8081 open**, you can still use the manual setup:
 ```bash

@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a **GPU-accelerated AI inference platform** with integrated billing, user management, and hardware monitoring. The stack consists of:
 
 - **llama.cpp**: CUDA-based LLM inference engine serving GLM-4.7-Flash and Nemotron-3-Nano models
-- **llama-proxy**: Python HTTP proxy providing authentication, model routing, and request rewriting
+- **ai-proxy**: Python HTTP proxy providing authentication, model routing, and request rewriting
 - **temper**: C++ GPU telemetry and thermal control system (NVIDIA NVML)
 - **ai-portal**: React 19 web dashboard for GPU monitoring and API management
 - **stripe-handler**: FastAPI service for Stripe subscription billing
@@ -36,7 +36,7 @@ This is a **GPU-accelerated AI inference platform** with integrated billing, use
 ```
 ai-portal (Port 3000) → Nginx Reverse Proxy
 ├─ /api/metrics → host-metrics:3001 (read-only GPU/host metrics)
-├─ /api/* → llama-proxy:8081 (model routing)
+├─ /api/* → ai-proxy:8081 (model routing)
 ├─ /auth, /rest → Supabase Kong
 └─ SPA assets
 
@@ -49,10 +49,10 @@ ai-portal (Port 3000) → Nginx Reverse Proxy
 ├─ host-metrics (Port 3001): GPU/host metrics collection (read-only)
 └─ (No fan control - vLLM handles resource management)
 
-LLM Requests → llama-proxy (Port 8081) → llama-server/vLLM (Port 8082/8000)
-                    ↓                           ↓
-              PostgreSQL DB                 CUDA GPUs
-              (API key validation)          (model inference)
+LLM Requests → ai-proxy (Port 8081) → llama-server (Port 8082)
+                    ↓                          ↓
+              PostgreSQL DB                CUDA GPUs
+              (API key validation)         (model inference)
 ```
 
 ### Key Data Flows
@@ -70,7 +70,7 @@ LLM Requests → llama-proxy (Port 8081) → llama-server/vLLM (Port 8082/8000)
    - No HTTP API (internal monitoring only)
    - Independent from metrics collection - failure doesn't affect monitoring
 
-3. **LLM Inference**: Client sends request with API key → llama-proxy validates against DB → forwards to llama-server/vLLM → streams response back
+3. **LLM Inference**: Client sends request with API key → ai-proxy validates against DB → forwards to llama-server → streams response back
 
 4. **Authentication**: User logs in via Supabase Auth → JWT stored in browser → used for API key management and billing
 
@@ -86,13 +86,13 @@ docker compose up -d
 docker compose up -d --build host-metrics    # Read-only metrics (Ellie + Sparky)
 docker compose up -d --build fan-control     # Active fan control (Ellie only)
 docker compose up -d --build ai-portal     # Web dashboard
-docker compose up -d --build llama-proxy     # Model router
+docker compose up -d --build ai-proxy        # Model router
 
 # View logs
 docker compose logs -f host-metrics
 docker compose logs -f fan-control
 docker compose logs -f llama-server
-docker compose logs -f llama-proxy
+docker compose logs -f ai-proxy
 
 # Full update (downloads models, rebuilds images, restarts)
 ./scripts/update.sh
@@ -110,7 +110,7 @@ curl -s -H "x-api-key: $METRICS_API_KEY" http://localhost:3001/metrics | jq .
 # Test llama-server health (requires LLAMA_API_KEY from .env)
 curl -H "Authorization: Bearer $LLAMA_API_KEY" http://localhost:8082/chat/health
 
-# Test llama-proxy (requires valid user API key)
+# Test ai-proxy (requires valid user API key)
 curl -X POST http://localhost:8081/v1/chat/completions \
   -H "Authorization: Bearer sk-ant-YOUR_USER_API_KEY" \
   -H "Content-Type: application/json" \
@@ -155,7 +155,7 @@ Defines LLM model configurations:
 - `glm`: GLM-4.7-Flash with 200K context, tensor-split 22,25 (multi-GPU)
 - `nemotron`: Nemotron-3-Nano-30B with 200K context, tensor-split 25,27
 
-**Important**: Only one model loads at a time (`models-max 1` in docker-compose.yml). Model swapping is handled by llama-proxy's DEFAULT_MODEL env var.
+**Important**: Only one model loads at a time. Model routing is configured per-model in `models.ini` with explicit host fields. ai-proxy uses this to route requests to the correct backend.
 
 ### `/.env`
 Required environment variables:
@@ -224,15 +224,15 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 - Ellie runs both: `host-metrics` (port 3001) and `fan-control` (internal)
 - Sparky runs only: `host-metrics` (port 3001)
 
-### llama-proxy (Python Gateway)
+### ai-proxy (Python Gateway)
 
-**Purpose**: Validates API keys, rewrites model names, forwards to llama-server
-- Database-backed auth with 60-second cache to reduce DB load
-- Translates Claude model names (e.g., `claude-3-5-sonnet-20241022`) to configured model (`glm` or `nemotron`)
+**Purpose**: Validates API keys, routes requests to backends per `models.ini`, forwards to llama-server
+- Database-backed auth with 30-second cache to reduce DB load
+- Routes requests to the correct backend based on model config host field
 - Streaming support via chunked transfer encoding
 - Logs to `/app/logs/` (mounted volume)
 
-**Dependencies**: Python 3.11, psycopg2, HTTP server stdlib
+**Dependencies**: Python 3.11, psycopg2, requests
 
 ### ai-portal (React Frontend)
 
@@ -251,7 +251,7 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 - `src/components/charts/`: Specialized chart components (PowerChart, TempChart, MemoryChart, etc.)
 - `src/components/SettingsPage.tsx`: API key management and configuration
 
-**Nginx Config**: Reverse proxies `/api/*` to temper, `/auth/*` and `/rest/*` to Supabase Kong, serves SPA from root
+**Nginx Config**: Reverse proxies `/api/metrics` to host-metrics, `/api/*` to ai-proxy, `/auth/*` and `/rest/*` to Supabase Kong, serves SPA from root
 
 **Build**: Multi-stage Dockerfile (Node 20 build → Nginx alpine runtime)
 
@@ -267,8 +267,8 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 
 ## Security Considerations
 
-- **API Keys**: User keys stored in PostgreSQL `api_keys` table, validated on every llama-proxy request
-- **Internal Auth**: `LLAMA_API_KEY` protects llama-server from direct access (only llama-proxy knows it)
+- **API Keys**: User keys stored in PostgreSQL `api_keys` table, validated on every ai-proxy request
+- **Internal Auth**: `LLAMA_API_KEY` protects llama-server from direct access (only ai-proxy knows it)
 - **Metrics Auth**: `METRICS_API_KEY` required for accessing host-metrics `/metrics` endpoint
 - **CSP Headers**: Nginx applies Content Security Policy allowing only trusted origins
 - **Network Isolation**:
@@ -301,9 +301,9 @@ POWER_SETPOINTS=70:230 80:175 85:125            # GPU temp:power_limit_watts
 - Review startup logs: `docker compose logs llama-server`
 - Ensure sufficient VRAM for model size
 
-### llama-proxy returns 401 Unauthorized
+### ai-proxy returns 401 Unauthorized
 - Verify API key exists in database: `SELECT * FROM api_keys;`
-- Check `llama-proxy` logs for cache hits/misses
+- Check `ai-proxy` logs for cache hits/misses
 - Ensure PostgreSQL is healthy: `docker compose ps db`
 
 ### Frontend not loading
@@ -351,9 +351,9 @@ For frontend changes, use `npm run dev` in `ai-portal/` for hot reload during de
 
 ## Model Management
 
-**Swap models**: Edit `llama-proxy` environment variable `DEFAULT_MODEL` to `glm` or `nemotron`, then:
+**Swap models**: Update model host fields in `/models.ini`, then restart ai-proxy:
 ```bash
-docker compose up -d llama-proxy
+docker compose restart ai-proxy
 ```
 
 **Add new model**:

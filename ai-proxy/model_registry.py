@@ -6,9 +6,8 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Default vLLM host from env vars (used when model has no explicit host)
-DEFAULT_VLLM_HOST = os.environ.get("VLLM_SERVER_HOST", "vllm-server")
-DEFAULT_VLLM_PORT = os.environ.get("VLLM_SERVER_PORT", "8000")
+# Default host for models without an explicit host field in models.ini
+DEFAULT_HOST = os.environ.get("DEFAULT_MODEL_HOST", "llama-server:8082")
 
 @dataclass
 class ModelConfig:
@@ -30,9 +29,9 @@ class ModelConfig:
 
     @property
     def is_local(self) -> bool:
-        """True if this model runs on the local vllm-server container."""
+        """True if this model runs on a local container (llama-server)."""
         h = self.host.split(":")[0]
-        return h in ("vllm-server", "localhost", "127.0.0.1")
+        return h in ("llama-server", "localhost", "127.0.0.1")
 
 class ModelRegistry:
     def __init__(self, config_path: str = "/app/models.ini"):
@@ -57,7 +56,7 @@ class ModelRegistry:
                 # Extract core fields
                 path = config[section].get('model', model_id)
                 alias = config[section].get('alias', model_id)
-                host = config[section].get('host', f"{DEFAULT_VLLM_HOST}:{DEFAULT_VLLM_PORT}")
+                host = config[section].get('host', DEFAULT_HOST)
 
                 # Determine backend
                 if 'backend' in config[section]:

@@ -5,7 +5,7 @@
 | Port | Service | Purpose | External Access |
 |------|---------|---------|-----------------|
 | 3000 | temper-view | Frontend + Supabase proxy | **Required for login** |
-| 8081 | llama-proxy | LLM inference API | **Required for Claude** |
+| 8081 | ai-proxy | LLM inference API | **Required for Claude** |
 | 8082 | llama-server | Internal LLM engine | Internal only |
 | 3001 | temper (fan-manager) | GPU metrics | Proxied via 3000 |
 | 8000 | stripe-handler | Billing webhooks | Proxied via 3000 |
@@ -30,7 +30,7 @@
 /chat/*          → llama-server (port 8082) with auto-auth
 ```
 
-### Port 8081 (llama-proxy)
+### Port 8081 (ai-proxy)
 
 **Serves:**
 - OpenAI-compatible LLM API
@@ -85,8 +85,8 @@ POST http://{IP}:8081/v1/chat/completions
 If you only need LLM inference and will set API keys manually:
 
 ```bash
-# Allow llama-proxy access
-sudo ufw allow 8081/tcp comment 'llama-proxy - LLM API'
+# Allow ai-proxy access
+sudo ufw allow 8081/tcp comment 'ai-proxy - LLM API'
 ```
 
 Then use manual key setup:
@@ -102,8 +102,8 @@ For the complete experience including `--login`:
 # Allow temper-view access (login, metrics, dashboard)
 sudo ufw allow 3000/tcp comment 'temper-view - Web UI and Supabase'
 
-# Allow llama-proxy access (LLM inference)
-sudo ufw allow 8081/tcp comment 'llama-proxy - LLM API'
+# Allow ai-proxy access (LLM inference)
+sudo ufw allow 8081/tcp comment 'ai-proxy - LLM API'
 ```
 
 Then use login feature:
@@ -121,7 +121,7 @@ services:
     ports:
       - "8082:8082"  # Internal only, not externally accessible
 
-  llama-proxy:
+  ai-proxy:
     ports:
       - "8081:8081"  # External access for LLM API
 
@@ -189,7 +189,7 @@ Internet/LAN
     │         ├─→ stripe-handler:8000 (billing)
     │         └─→ llama-server:8082 (chat UI, auto-auth)
     │
-    └─── Port 8081 (llama-proxy)
+    └─── Port 8081 (ai-proxy)
               │
               ├─→ PostgreSQL (key validation)
               └─→ llama-server:8082 (inference)
@@ -293,10 +293,10 @@ sudo ufw allow from 192.168.1.0/24 to any port 8081
 
 **Answer:** You need **port 3000** exposed in addition to port 8081.
 
-- **Port 8081** (llama-proxy): LLM inference only
+- **Port 8081** (ai-proxy): LLM inference only
 - **Port 3000** (temper-view): Login, auth, API key management, web UI
 
-The login feature does NOT route through llama-proxy. It uses the temper-view Nginx reverse proxy to access Supabase on port 3000.
+The login feature does NOT route through ai-proxy. It uses the temper-view Nginx reverse proxy to access Supabase on port 3000.
 
 If you don't want to expose port 3000, you can still use the manual setup:
 ```bash

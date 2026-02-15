@@ -134,15 +134,15 @@ curl -s -H "X-API-Key: $METRICS_API_KEY" http://localhost:3001/metrics | jq .gpu
 - Fan curve parsing succeeds
 - Metrics endpoint returns valid JSON with GPU data
 
-#### llama-proxy (Python Gateway)
+#### ai-proxy (Python Gateway)
 ```bash
-cd llama-proxy
+cd ai-proxy
 
 # Check Python syntax
 python3 -m py_compile proxy.py
 
 # Integration test (requires running services)
-docker compose up -d llama-proxy
+docker compose up -d ai-proxy
 sleep 5
 
 # Test health endpoint
@@ -152,7 +152,7 @@ curl -X POST http://localhost:8081/v1/chat/completions \
   -d '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"test"}],"max_tokens":5}'
 
 # Check logs
-docker compose logs llama-proxy | tail -20
+docker compose logs ai-proxy | tail -20
 ```
 
 **Expected Results:**
@@ -301,7 +301,7 @@ ai-stack/                 # Main repository
 ├── llama.cpp/            # Submodule (upstream llama.cpp)
 ├── temper/               # Submodule (GPU control)
 ├── temper-view/          # Submodule (frontend)
-├── llama-proxy/          # Local component
+├── ai-proxy/          # Local component
 ├── stripe-handler/       # Local component
 └── supabase-ai/          # Local component
 ```
@@ -362,7 +362,7 @@ git branch -d feature/description
 
 **Scopes:**
 - `temper`: C++ GPU control
-- `proxy`: llama-proxy Python service
+- `proxy`: ai-proxy Python service
 - `frontend`: temper-view React app
 - `llama`: llama.cpp inference engine
 - `stripe`: Billing service
@@ -404,7 +404,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
    ```bash
    git status
    git add docker-compose.yml
-   git add llama-proxy/proxy.py
+   git add ai-proxy/proxy.py
    ```
 
 2. **Write descriptive commit message**
@@ -472,7 +472,7 @@ git log --follow -- docker-compose.yml
                       │              │
          ┌────────────▼──────────┐   │   ┌────────────────────┐
          │   Port 8004 (HTTP)    │   │   │  Port 8081 (HTTP)  │
-         │   Supabase Kong       │   │   │  llama-proxy       │
+         │   Supabase Kong       │   │   │  ai-proxy       │
          │   (API Gateway)       │   │   │                    │
          └────────────┬──────────┘   │   └────────┬───────────┘
                       │              │            │
@@ -499,7 +499,7 @@ git log --follow -- docker-compose.yml
 | Service | Port | External | Internal | Localhost | Auth Required |
 |---------|------|----------|----------|-----------|---------------|
 | **temper-view** | 3000 | ✅ HTTP | ✅ | ✅ | Via Supabase JWT |
-| **llama-proxy** | 8081 | ✅ HTTP | ✅ | ✅ | API Key (database) |
+| **ai-proxy** | 8081 | ✅ HTTP | ✅ | ✅ | API Key (database) |
 | **llama-server** | 8082 | ❌ | ✅ | ✅ | LLAMA_API_KEY |
 | **fan-manager** | 3001 | ❌ | ❌ | ✅ | METRICS_API_KEY |
 | **Supabase Kong** | 8004 | ✅ HTTP | ✅ | ✅ | JWT tokens |
@@ -528,7 +528,7 @@ sudo ufw allow from 192.168.1.0/24 to any port 22
 
 # DENY direct access to service ports
 sudo ufw deny 3001/tcp  # fan-manager
-sudo ufw deny 8081/tcp  # llama-proxy (should be behind reverse proxy)
+sudo ufw deny 8081/tcp  # ai-proxy (should be behind reverse proxy)
 sudo ufw deny 8082/tcp  # llama-server
 sudo ufw deny 8003/tcp  # Supabase Studio (dev only)
 sudo ufw deny 8004/tcp  # Supabase Kong (should be behind reverse proxy)
@@ -546,8 +546,8 @@ sudo ufw enable
 
 | From | To | Auth Method | Credential Location |
 |------|-----|-------------|---------------------|
-| llama-proxy | llama-server | Bearer token | `LLAMA_API_KEY` in .env |
-| llama-proxy | PostgreSQL | Password | `POSTGRES_PASSWORD` in .env |
+| ai-proxy | llama-server | Bearer token | `LLAMA_API_KEY` in .env |
+| ai-proxy | PostgreSQL | Password | `POSTGRES_PASSWORD` in .env |
 | fan-manager | llama-server | Bearer token | `LLAMA_API_KEY` in .env |
 | fan-manager | iDRAC | Password | `IDRAC_USER`/`IDRAC_PASS` in .env |
 | temper-view | fan-manager | API key | `METRICS_API_KEY` in .env |
@@ -559,7 +559,7 @@ sudo ufw enable
 
 ```bash
 # Test service connectivity from within network
-docker exec llama-proxy curl -s http://llama-server:8082/chat/health
+docker exec ai-proxy curl -s http://llama-server:8082/chat/health
 
 # Test external connectivity
 curl -v http://localhost:3000
@@ -572,8 +572,8 @@ docker compose ps
 netstat -tuln | grep -E "3000|3001|8081|8082|8003|8004|5433"
 
 # Test DNS resolution within Docker network
-docker exec llama-proxy ping -c 1 llama-server
-docker exec llama-proxy ping -c 1 db
+docker exec ai-proxy ping -c 1 llama-server
+docker exec ai-proxy ping -c 1 db
 ```
 
 ---
@@ -646,7 +646,7 @@ cat .env | grep METRICS_API_KEY
 3. **Restart affected services**
    ```bash
    # Restart services that use the credential
-   docker compose up -d --force-recreate llama-proxy fan-manager
+   docker compose up -d --force-recreate ai-proxy fan-manager
    ```
 
 4. **Verify new credential works**
@@ -732,7 +732,7 @@ echo "=== Audit Complete ==="
 
 | Service | Log Location | Format | Rotation | Retention |
 |---------|--------------|--------|----------|-----------|
-| **llama-proxy** | `/home/tyler/ai-stack/llama-proxy/logs/*.log` | Plain text | Manual | 30 days |
+| **ai-proxy** | `/home/tyler/ai-stack/ai-proxy/logs/*.log` | Plain text | Manual | 30 days |
 | **fan-manager** | Docker logs | stdout/stderr | Docker | 7 days |
 | **llama-server** | Docker logs | stdout/stderr | Docker | 7 days |
 | **temper-view** | Docker logs (Nginx) | Combined log format | Docker | 7 days |
@@ -747,7 +747,7 @@ echo "=== Audit Complete ==="
 docker compose logs -f
 
 # View logs for specific service
-docker compose logs -f llama-proxy
+docker compose logs -f ai-proxy
 docker compose logs -f fan-manager
 
 # View logs with timestamp
@@ -761,11 +761,11 @@ docker compose logs llama-server | grep -i error
 docker compose logs fan-manager | grep -i "nvml"
 
 # Export logs to file for analysis
-docker compose logs llama-proxy > /tmp/llama-proxy-debug.log
+docker compose logs ai-proxy > /tmp/ai-proxy-debug.log
 
-# llama-proxy persistent logs
-tail -f llama-proxy/logs/*.log
-ls -lh llama-proxy/logs/
+# ai-proxy persistent logs
+tail -f ai-proxy/logs/*.log
+ls -lh ai-proxy/logs/
 ```
 
 ### 6.3 Debug Mode Activation
@@ -780,7 +780,7 @@ ls -lh llama-proxy/logs/
 
 docker compose up -d --force-recreate fan-manager
 
-# llama-proxy (edit proxy.py to add logging)
+# ai-proxy (edit proxy.py to add logging)
 # Check current log level in proxy.py
 
 # llama-server (add --verbose flag)
@@ -818,13 +818,13 @@ chmod +x $SCRATCHPAD/test.sh
 
 ### 6.5 Log Rotation Policy
 
-**Manual log rotation for llama-proxy:**
+**Manual log rotation for ai-proxy:**
 
 ```bash
 #!/bin/bash
-# rotate-logs.sh - Rotate llama-proxy logs
+# rotate-logs.sh - Rotate ai-proxy logs
 
-LOG_DIR="/home/tyler/ai-stack/llama-proxy/logs"
+LOG_DIR="/home/tyler/ai-stack/ai-proxy/logs"
 RETENTION_DAYS=30
 
 # Archive old logs
@@ -868,7 +868,7 @@ echo "Log rotation complete"
 4. **Verify network connectivity**
    ```bash
    docker network inspect ai-stack-net
-   docker exec llama-proxy ping -c 1 llama-server
+   docker exec ai-proxy ping -c 1 llama-server
    ```
 
 5. **Check configuration**
@@ -1010,7 +1010,7 @@ echo "=== Monthly Security Check $(date) ===" | tee -a /var/log/security-checks.
 docker images | grep "days ago\|weeks ago\|months ago" | tee -a /var/log/security-checks.log
 
 # Check for known vulnerabilities in Python dependencies
-docker exec llama-proxy pip list --outdated | tee -a /var/log/security-checks.log
+docker exec ai-proxy pip list --outdated | tee -a /var/log/security-checks.log
 
 # Check file permissions
 find /home/tyler/ai-stack -name "*.env" -exec stat -c "%a %n" {} \; | tee -a /var/log/security-checks.log
@@ -1256,7 +1256,7 @@ docker exec fan-manager nvidia-smi
 
 ---
 
-#### Issue: "llama-proxy returns 401 Unauthorized"
+#### Issue: "ai-proxy returns 401 Unauthorized"
 
 **Symptoms:**
 - API requests fail with 401
@@ -1268,18 +1268,18 @@ docker exec fan-manager nvidia-smi
 docker exec -it ai-supabase-db-1 psql -U postgres -d postgres \
   -c "SELECT id, key_prefix, created_at FROM api_keys ORDER BY created_at DESC;"
 
-# Check llama-proxy logs
-docker compose logs llama-proxy | grep -i "api key"
+# Check ai-proxy logs
+docker compose logs ai-proxy | grep -i "api key"
 
 # Test database connectivity from proxy
-docker exec llama-proxy ping -c 1 db
+docker exec ai-proxy ping -c 1 db
 ```
 
 **Solutions:**
 1. Create API key in database (via temper-view UI or SQL)
 2. Verify POSTGRES_PASSWORD in .env matches database
 3. Check database is running: `docker compose ps db`
-4. Restart llama-proxy: `docker compose restart llama-proxy`
+4. Restart ai-proxy: `docker compose restart ai-proxy`
 
 ---
 
@@ -1525,7 +1525,7 @@ docker compose up -d
 
 ✅ **GOOD:**
 ```
-Modified llama-proxy/proxy.py to add rate limiting.
+Modified ai-proxy/proxy.py to add rate limiting.
 Tests passed: 100 req/min limit enforced correctly.
 Ready to commit.
 ```
@@ -1637,7 +1637,7 @@ docker compose exec <service> sh          # Shell into container
     │  ┌──────────────────────────┘
     │  │
 ┌───▼──▼─────────┐         ┌──────────────┐
-│  llama-server  │◄────────│ llama-proxy  │
+│  llama-server  │◄────────│ ai-proxy  │
 │  (Inference)   │         │   (Gateway)  │
 └────────────────┘         └──────┬───────┘
          │                        │

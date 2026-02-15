@@ -147,7 +147,7 @@ curl -s http://localhost:3000/api/metrics | jq .ai_service
 
 ### Test 3: User API Key Validation
 
-**Objective:** Verify llama-proxy validates user keys against database
+**Objective:** Verify ai-proxy validates user keys against database
 
 **Procedure:**
 

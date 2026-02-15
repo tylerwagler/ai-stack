@@ -34,7 +34,7 @@ nvidia-smi                                # GPU status
 
 ### View Logs
 ```bash
-docker compose logs -f llama-proxy        # Proxy logs
+docker compose logs -f ai-proxy        # Proxy logs
 docker compose logs -f fan-manager        # Fan control logs
 docker compose logs -f llama-server       # Inference logs
 docker compose logs --tail=100 <service>  # Last 100 lines
@@ -132,7 +132,7 @@ git log --oneline -10
 
 # Stage specific files
 git add docker-compose.yml
-git add llama-proxy/proxy.py
+git add ai-proxy/proxy.py
 
 # Commit with proper format
 git commit -m "$(cat <<'EOF'
@@ -223,7 +223,7 @@ docker compose config | grep -i llama_api_key
 # Change: DEFAULT_MODEL=GLM 4.7 Flash
 # To:     DEFAULT_MODEL=Nemotron-3-Nano-30B-A3B
 
-docker compose up -d llama-proxy
+docker compose up -d ai-proxy
 docker compose restart llama-server
 ```
 
@@ -245,7 +245,7 @@ docker compose restart llama-server
 |----------|----------|
 | **Project Root** | `/home/tyler/ai-stack` |
 | **Environment** | `/home/tyler/ai-stack/.env` |
-| **Logs** | `/home/tyler/ai-stack/llama-proxy/logs` |
+| **Logs** | `/home/tyler/ai-stack/ai-proxy/logs` |
 | **Backups** | `/home/tyler/ai-stack/backups` |
 | **Models** | Docker volume: `ai-stack_llama_cache` |
 | **Documentation** | `/home/tyler/ai-stack/CLAUDE.md` |
@@ -259,7 +259,7 @@ docker compose restart llama-server
 temper-view (3000) → fan-manager (3001) → GPU Hardware
                    → Supabase (8004) → PostgreSQL (5433)
 
-llama-proxy (8081) → llama-server (8082) → GPU Hardware
+ai-proxy (8081) → llama-server (8082) → GPU Hardware
                    → PostgreSQL (5433)
 ```
 

@@ -79,8 +79,8 @@ else
     echo -e "${YELLOW}Test 5: SKIPPED - LLAMA_API_KEY not set${NC}"
 fi
 
-# Test 6: llama-proxy Accessibility
-echo -e "${YELLOW}Test 6: Testing llama-proxy endpoint...${NC}"
+# Test 6: ai-proxy Accessibility
+echo -e "${YELLOW}Test 6: Testing ai-proxy endpoint...${NC}"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST http://localhost:8081/v1/chat/completions \
     -H "Authorization: Bearer invalid-key-test" \
@@ -88,9 +88,9 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -d '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"test"}],"max_tokens":5}')
 # Should return 401 (unauthorized) or 500 (if processing the request)
 if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "500" ] || [ "$HTTP_CODE" = "200" ]; then
-    test_status 0 "llama-proxy is responding"
+    test_status 0 "ai-proxy is responding"
 else
-    test_status 1 "llama-proxy not responding (HTTP $HTTP_CODE)"
+    test_status 1 "ai-proxy not responding (HTTP $HTTP_CODE)"
 fi
 
 # Test 7: Frontend Accessibility
@@ -113,7 +113,7 @@ fi
 
 # Test 9: Docker Network Connectivity
 echo -e "${YELLOW}Test 9: Testing internal network connectivity...${NC}"
-docker exec llama-proxy ping -c 1 llama-server > /dev/null 2>&1
+docker exec ai-proxy ping -c 1 llama-server > /dev/null 2>&1
 test_status $? "Internal network connectivity verified"
 
 # Test 10: Volume Mounts

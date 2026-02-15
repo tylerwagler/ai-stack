@@ -30,7 +30,7 @@ The ai-stack uses a **three-tier authentication system** with distinct API keys 
 │   browser → nginx → temper                                   │
 ├─────────────────────────────────────────────────────────────┤
 │ Layer 3: User (User API Keys)                              │
-│   user clients → llama-proxy → PostgreSQL validation       │
+│   user clients → ai-proxy → PostgreSQL validation       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -55,7 +55,7 @@ This separation ensures:
 **NOT Used By:**
 - End users
 - Frontend (temper-view)
-- llama-proxy (uses its own auth)
+- ai-proxy (uses its own auth)
 
 **Security Level:** HIGH - exposes full llama-server functionality
 
@@ -88,7 +88,7 @@ curl -H "Authorization: Bearer $LLAMA_API_KEY" \
 **NOT Used By:**
 - Frontend JavaScript (nginx injects header automatically)
 - llama-server
-- llama-proxy
+- ai-proxy
 
 **Security Level:** MEDIUM - exposes read-only system metrics
 
@@ -109,12 +109,12 @@ curl -H "X-API-Key: $METRICS_API_KEY" \
 
 ### 3. User API Keys
 
-**Purpose:** Authenticate end users for LLM inference via llama-proxy
+**Purpose:** Authenticate end users for LLM inference via ai-proxy
 
 **Format:** `sk-ant-{user_random_string}` (user-specific)
 
 **Used By:**
-- End users making requests to llama-proxy
+- End users making requests to ai-proxy
 - User applications and integrations
 - API clients like curl, Postman, SDKs
 
@@ -133,7 +133,7 @@ curl -H "X-API-Key: $METRICS_API_KEY" \
 - User's secure storage (keys shown once on creation)
 
 **Validation:**
-1. llama-proxy receives request with user API key
+1. ai-proxy receives request with user API key
 2. Queries PostgreSQL: `SELECT * FROM api_keys WHERE key = ?`
 3. Checks subscription status and rate limits
 4. Caches result for 60 seconds
@@ -357,11 +357,11 @@ CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 
 ---
 
-### Flow 3: User Inference Request (User → llama-proxy → llama-server)
+### Flow 3: User Inference Request (User → ai-proxy → llama-server)
 
 ```
 ┌──────┐      ┌─────────────┐      ┌──────────────┐      ┌──────────────┐
-│ User │      │ llama-proxy │      │  PostgreSQL  │      │ llama-server │
+│ User │      │ ai-proxy │      │  PostgreSQL  │      │ llama-server │
 │      │      │    :8081    │      │      DB      │      │    :8082     │
 └──┬───┘      └──────┬──────┘      └──────┬───────┘      └──────┬───────┘
    │                 │                     │                     │
@@ -403,7 +403,7 @@ CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 
 **Model Name Rewriting:**
 
-llama-proxy translates Claude-style model names to actual models:
+ai-proxy translates Claude-style model names to actual models:
 
 ```python
 # Example mapping
@@ -491,7 +491,7 @@ std::cout << "[Llama] API key: " << apiKey_ << std::endl;  // NEVER DO THIS
 ```
 
 ```python
-# Good - llama-proxy Python code
+# Good - ai-proxy Python code
 key_prefix = user_key[:12]
 logger.info(f"Validated API key: {key_prefix}...")
 
@@ -518,8 +518,8 @@ docker compose logs llama-server | grep -i "401\|unauthorized"
 # Monitor temper 401 responses
 docker compose logs fan-manager | grep -i "401\|unauthorized"
 
-# Monitor llama-proxy failed validations
-docker compose logs llama-proxy | grep -i "invalid.*key"
+# Monitor ai-proxy failed validations
+docker compose logs ai-proxy | grep -i "invalid.*key"
 ```
 
 **Set Up Alerts:**
@@ -598,7 +598,7 @@ curl -v -H "X-API-Key: $METRICS_API_KEY" http://localhost:3001/metrics
 
 ---
 
-### Problem: llama-proxy says "API key not found"
+### Problem: ai-proxy says "API key not found"
 
 **Symptoms:**
 ```
@@ -613,9 +613,9 @@ docker exec -it ai-supabase-db-1 psql -U postgres -d postgres -c \
   "SELECT id, key_prefix, revoked FROM api_keys WHERE key = 'sk-ant-USER_KEY';"
 ```
 
-2. Check llama-proxy logs:
+2. Check ai-proxy logs:
 ```bash
-docker compose logs llama-proxy | grep -i "api.*key"
+docker compose logs ai-proxy | grep -i "api.*key"
 ```
 
 3. Verify key is not revoked:
@@ -763,7 +763,7 @@ UPDATE api_keys SET revoked = TRUE WHERE user_id = 'user-uuid';
 Allow old keys to work for transition period:
 
 ```python
-# llama-proxy
+# ai-proxy
 if is_key_revoked_recently(key, grace_period_hours=24):
     logger.warning(f"Using deprecated key {key_prefix}, revoked recently")
     # Still allow, but log warning

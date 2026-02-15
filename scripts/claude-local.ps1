@@ -53,7 +53,7 @@ function Get-ApiKeyFromLogin {
         [securestring]$Password
     )
 
-    # Supabase is exposed via temper-view on port 3000, NOT llama-proxy on 8081
+    # Supabase is exposed via temper-view on port 3000, NOT ai-proxy on 8081
     # The Nginx reverse proxy routes /auth/v1/ and /rest/v1/ to Supabase Kong
     $supabaseUrl = if ($env:SUPABASE_URL) {
         $env:SUPABASE_URL
