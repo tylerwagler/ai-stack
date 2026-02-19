@@ -60,7 +60,6 @@ services:
       - ai-stack-net
     volumes:
       - ./ai-proxy/logs:/app/logs
-      - ./models.ini:/app/models.ini
     depends_on:
       db:
         condition: service_healthy

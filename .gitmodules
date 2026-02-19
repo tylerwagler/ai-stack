@@ -6,3 +6,6 @@
 	path = ai-portal
 	url = https://github.com/tylerwagler/temper-view.git
 	branch = master
+[submodule "spark-vllm-docker"]
+	path = spark-vllm-docker
+	url = https://github.com/eugr/spark-vllm-docker.git

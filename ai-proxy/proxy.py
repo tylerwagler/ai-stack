@@ -39,9 +39,21 @@ db_pool = None
 KEY_CACHE = {}
 CACHE_TTL = 30
 
-# Model Management
+# Model Management — discover from model-manager catalog APIs
 model_registry = ModelRegistry()
-model_registry.load_models()
+
+# Initial catalog fetch with retry (model managers may not be up yet)
+for _attempt in range(12):  # retry for up to ~60s
+    _models = model_registry.load_models()
+    if _models:
+        print(f"Catalog loaded: {len(_models)} models discovered", file=sys.stderr)
+        break
+    print(f"Waiting for model managers... (attempt {_attempt + 1}/12)", file=sys.stderr)
+    time.sleep(5)
+else:
+    print("WARNING: No models discovered from any model manager", file=sys.stderr)
+
+model_registry.start_refresh_loop()
 
 # Service Poller (background thread polling all LLM backends)
 service_poller = ServicePoller(model_registry)
@@ -773,13 +785,16 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
                         self.send_error_json(503, "No model found for request")
                         return
 
-                    # Rewrite model field for vLLM to the name the backend actually reports
+                    # Rewrite model field for vLLM to served-model-name or what the backend reports
                     if model_config.backend == 'vllm':
-                        served_name = model_config.path  # fallback to HF path
-                        for b in service_poller.get_all():
-                            if b.get('host') == model_config.host and b.get('status') == 'ready':
-                                served_name = b.get('model', served_name)
-                                break
+                        # Prefer served-model-name from catalog, then try service_poller
+                        served_name = model_config.parameters.get('served-model-name', '')
+                        if not served_name:
+                            served_name = model_config.path  # fallback to HF path
+                            for b in service_poller.get_all():
+                                if b.get('host') == model_config.host and b.get('status') == 'ready':
+                                    served_name = b.get('model', served_name)
+                                    break
                         data['model'] = served_name
 
                     # Inject per-model sampling defaults (only if client didn't set them)

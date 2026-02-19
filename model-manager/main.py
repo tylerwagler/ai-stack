@@ -99,6 +99,14 @@ class ModelConfig:
         default_max = self.ctx_size if self.backend == "llama" else self.max_model_len
         self.max_ctx = int(config.get("max_ctx", str(default_max)))
 
+        # Proxy routing fields (passed through to ai-proxy via catalog API)
+        self.default_temperature = config.get("default_temperature", "")
+        self.default_top_p = config.get("default_top_p", "")
+        self.default_top_k = config.get("default_top_k", "")
+        self.default_min_p = config.get("default_min_p", "")
+        self.max_output = config.get("max_output", "")
+        self.chat_visible = config.get("chat_visible", "true")
+
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
             "id": self.id,
@@ -126,6 +134,19 @@ class ModelConfig:
                 "max_num_seqs": self.max_num_seqs,
                 "kv_cache_dtype": self.kv_cache_dtype,
             })
+        # Proxy routing fields (only include when set)
+        if self.default_temperature:
+            d["default_temperature"] = self.default_temperature
+        if self.default_top_p:
+            d["default_top_p"] = self.default_top_p
+        if self.default_top_k:
+            d["default_top_k"] = self.default_top_k
+        if self.default_min_p:
+            d["default_min_p"] = self.default_min_p
+        if self.max_output:
+            d["max_output"] = self.max_output
+        if self.chat_visible != "true":
+            d["chat_visible"] = self.chat_visible
         return d
 
 
