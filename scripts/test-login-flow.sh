@@ -12,7 +12,13 @@ echo ""
 # Supabase is exposed via temper-view (port 3000), not ai-proxy (port 8081)
 SUPABASE_URL="http://10.20.10.5:3000"
 LLAMA_PROXY_URL="http://10.20.10.5:8081"
-ANON_KEY="eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJyb2xlIjogImFub24iLCAiaXNzIjogInN1cGFiYXNlIiwgImlhdCI6IDE3Njk1MjYyNTgsICJleHAiOiAyMDg0ODg2MjU4fQ.UYjtcXHj4l-9rEHMzNk2rqc-djmaPTtumgylFpG5NfA"
+# Read anon key from Supabase .env if available
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUPABASE_ENV="${SCRIPT_DIR}/../supabase-ai/.env"
+if [ -f "$SUPABASE_ENV" ]; then
+    ANON_KEY=$(grep "^ANON_KEY=" "$SUPABASE_ENV" | cut -d= -f2- | tr -d "[:space:]")
+fi
+ANON_KEY="${ANON_KEY:-eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJyb2xlIjogImFub24iLCAiaXNzIjogInN1cGFiYXNlIiwgImlhdCI6IDE3NzAzODc2OTgsICJleHAiOiAyMDg1NzQ3Njk4fQ.pgUNZqS2ipzxUoyaOEfAda9VqNj8FAPcxCGtDzu6Og8}"
 
 echo "1. Testing Supabase health endpoint..."
 if curl -s -f "${SUPABASE_URL}/auth/v1/health" > /dev/null; then

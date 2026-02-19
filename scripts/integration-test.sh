@@ -54,29 +54,19 @@ else
     test_status 1 "Database schema missing"
 fi
 
-# Test 4: GPU Metrics (if METRICS_API_KEY is set)
-if [ -n "$METRICS_API_KEY" ]; then
-    echo -e "${YELLOW}Test 4: Fetching GPU metrics...${NC}"
-    METRICS=$(curl -s -H "X-API-Key: $METRICS_API_KEY" http://localhost:3001/metrics)
-    echo "$METRICS" | jq -e '.gpus[0]' > /dev/null 2>&1
-    test_status $? "GPU metrics accessible"
-else
-    echo -e "${YELLOW}Test 4: SKIPPED - METRICS_API_KEY not set${NC}"
-fi
+# Test 4: GPU Metrics
+echo -e "${YELLOW}Test 4: Fetching GPU metrics...${NC}"
+METRICS=$(curl -s http://localhost:3001/metrics)
+echo "$METRICS" | jq -e '.gpus[0]' > /dev/null 2>&1
+test_status $? "GPU metrics accessible"
 
 # Test 5: llama-server Health
-if [ -n "$LLAMA_API_KEY" ]; then
-    echo -e "${YELLOW}Test 5: Testing llama-server health...${NC}"
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "Authorization: Bearer $LLAMA_API_KEY" \
-        http://localhost:8082/chat/health)
-    if [ "$HTTP_CODE" = "200" ]; then
-        test_status 0 "llama-server health check passed"
-    else
-        test_status 1 "llama-server health check failed (HTTP $HTTP_CODE)"
-    fi
+echo -e "${YELLOW}Test 5: Testing llama-server health...${NC}"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/chat/health)
+if [ "$HTTP_CODE" = "200" ]; then
+    test_status 0 "llama-server health check passed"
 else
-    echo -e "${YELLOW}Test 5: SKIPPED - LLAMA_API_KEY not set${NC}"
+    test_status 1 "llama-server health check failed (HTTP $HTTP_CODE)"
 fi
 
 # Test 6: ai-proxy Accessibility
@@ -100,6 +90,36 @@ if [ "$HTTP_CODE" = "200" ]; then
     test_status 0 "Frontend is accessible"
 else
     test_status 1 "Frontend not accessible (HTTP $HTTP_CODE)"
+fi
+
+# Test 7a: Auth Login Endpoint
+echo -e "${YELLOW}Test 7a: Testing auth login endpoint...${NC}"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8081/v1/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"email":"bad@test.com","password":"wrong"}')
+# Should return 400 (bad creds) not 404 or 500
+if [ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "200" ]; then
+    test_status 0 "Auth login endpoint responding (HTTP $HTTP_CODE)"
+else
+    test_status 1 "Auth login endpoint not responding (HTTP $HTTP_CODE)"
+fi
+
+# Test 7b: Auth Keys Endpoint (no token)
+echo -e "${YELLOW}Test 7b: Testing auth keys endpoint (no auth)...${NC}"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/v1/auth/keys)
+if [ "$HTTP_CODE" = "401" ]; then
+    test_status 0 "Auth keys endpoint requires auth (HTTP 401)"
+else
+    test_status 1 "Auth keys endpoint unexpected response (HTTP $HTTP_CODE)"
+fi
+
+# Test 7c: Install Scripts Served
+echo -e "${YELLOW}Test 7c: Testing install script serving...${NC}"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/install/setup.sh)
+if [ "$HTTP_CODE" = "200" ]; then
+    test_status 0 "Install scripts served (HTTP 200)"
+else
+    test_status 1 "Install scripts not served (HTTP $HTTP_CODE)"
 fi
 
 # Test 8: Supabase API

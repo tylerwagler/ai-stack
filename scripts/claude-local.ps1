@@ -1,10 +1,16 @@
-# PowerShell wrapper for Claude Code CLI to use Local AI Stack
-# Usage: .\claude-local.ps1 [args]
-#        .\claude-local.ps1 -Login                  # Login and retrieve/create API key
-#        .\claude-local.ps1 -SetKey <api-key>       # Set API key manually
-#        .\claude-local.ps1 -SetUrl <base-url>      # Set base URL
-#        .\claude-local.ps1 -Config                 # Show current config
-#        .\claude-local.ps1 -ResetConfig            # Reset configuration
+# claude-local.ps1 — Local development wrapper for Claude Code
+#
+# This version is for development use when running near the AI Stack host.
+# For distributable installs, use:
+#   $env:PORTAL_URL="http://ellie:3000"; irm http://ellie:3000/install/setup.ps1 | iex
+#
+# Usage:
+#   .\claude-local.ps1 [args]
+#   .\claude-local.ps1 -Login                  # Login and retrieve/create API key
+#   .\claude-local.ps1 -SetKey <api-key>       # Set API key manually
+#   .\claude-local.ps1 -SetUrl <base-url>      # Set base URL
+#   .\claude-local.ps1 -Config                 # Show current config
+#   .\claude-local.ps1 -ResetConfig            # Reset configuration
 
 param(
     [switch]$Login,
@@ -26,152 +32,92 @@ function Save-Config {
     if (-not (Test-Path $ConfigDir)) {
         New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
     }
-
-    $configContent = @()
+    $lines = @()
     if ($script:ApiKey) {
-        $configContent += "`$env:LLAMA_API_KEY = `"$script:ApiKey`""
+        $lines += "`$env:CLAUDE_LOCAL_API_KEY = `"$($script:ApiKey)`""
     }
     if ($script:BaseUrl) {
-        $configContent += "`$env:ANTHROPIC_BASE_URL = `"$script:BaseUrl`""
+        $lines += "`$env:CLAUDE_LOCAL_URL = `"$($script:BaseUrl)`""
     }
-
-    $configContent -join "`n" | Out-File -FilePath $ConfigFile -Encoding UTF8
+    $lines -join "`n" | Out-File -FilePath $ConfigFile -Encoding UTF8
 }
 
-# Helper function to generate secure API key
-function New-ApiKey {
-    $randomBytes = New-Object byte[] 16
-    [Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($randomBytes)
-    $randomPart = ([BitConverter]::ToString($randomBytes) -replace '-','').Substring(0,30).ToLower()
-    return "sk_ai_$randomPart"
-}
-
-# Helper function to authenticate and retrieve/create API key
+# Helper function to authenticate via ai-proxy auth endpoints
 function Get-ApiKeyFromLogin {
     param(
         [string]$Email,
-        [securestring]$Password
+        [securestring]$Password,
+        [string]$BaseUrl
     )
 
-    # Supabase is exposed via temper-view on port 3000, NOT ai-proxy on 8081
-    # The Nginx reverse proxy routes /auth/v1/ and /rest/v1/ to Supabase Kong
-    $supabaseUrl = if ($env:SUPABASE_URL) {
-        $env:SUPABASE_URL
-    } else {
-        "http://10.20.10.5:3000"
-    }
-
-    # Supabase anon key (from temper-view)
-    $anonKey = "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJyb2xlIjogImFub24iLCAiaXNzIjogInN1cGFiYXNlIiwgImlhdCI6IDE3Njk1MjYyNTgsICJleHAiOiAyMDg0ODg2MjU4fQ.UYjtcXHj4l-9rEHMzNk2rqc-djmaPTtumgylFpG5NfA"
-
-    Write-Host "Authenticating with AI Stack..."
-
-    # Convert SecureString to plain text for API call
+    # Convert SecureString to plain text
     $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
     $plainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
 
-    # Authenticate with Supabase
-    $authBody = @{
-        email = $Email
-        password = $plainPassword
-    } | ConvertTo-Json
+    $body = @{ email = $Email; password = $plainPassword } | ConvertTo-Json
+
+    Write-Host "Authenticating with AI Stack..."
 
     try {
-        $authResponse = Invoke-RestMethod -Uri "$supabaseUrl/auth/v1/token?grant_type=password" `
+        $response = Invoke-RestMethod -Uri "$BaseUrl/v1/auth/login" `
             -Method Post `
-            -Headers @{
-                "apikey" = $anonKey
-                "Content-Type" = "application/json"
-            } `
-            -Body $authBody `
+            -Headers @{ "Content-Type" = "application/json" } `
+            -Body $body `
             -ErrorAction Stop
     }
     catch {
-        Write-Host "Error: Authentication failed - $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Authentication failed: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 
-    $accessToken = $authResponse.access_token
-    $userId = $authResponse.user.id
-
-    if (-not $accessToken) {
-        Write-Host "Error: Failed to authenticate" -ForegroundColor Red
+    if (-not $response.access_token) {
+        Write-Host "Authentication failed." -ForegroundColor Red
         return $null
     }
 
-    Write-Host "Authentication successful! Retrieving API keys..." -ForegroundColor Green
+    $accessToken = $response.access_token
+    $keys = $response.api_keys
 
-    # Fetch existing API keys
-    try {
-        $keysResponse = Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/api_keys?select=api_key,name,created_at&order=created_at.desc" `
-            -Method Get `
-            -Headers @{
-                "apikey" = $anonKey
-                "Authorization" = "Bearer $accessToken"
-                "Content-Type" = "application/json"
-            } `
-            -ErrorAction Stop
-    }
-    catch {
-        Write-Host "Error: Failed to fetch API keys - $($_.Exception.Message)" -ForegroundColor Red
-        return $null
-    }
+    Write-Host "Authentication successful!" -ForegroundColor Green
 
-    $keyCount = $keysResponse.Count
-
-    if ($keyCount -gt 0) {
-        Write-Host "`nFound $keyCount existing API key(s):" -ForegroundColor Cyan
-        for ($i = 0; $i -lt $keyCount; $i++) {
-            $key = $keysResponse[$i]
+    if ($keys -and $keys.Count -gt 0) {
+        Write-Host "`nFound $($keys.Count) existing API key(s):" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $keys.Count; $i++) {
+            $k = $keys[$i]
             $num = $i + 1
-            $name = $key.name
-            # PowerShell parses JSON dates as DateTime objects, so format them
-            if ($key.created_at -is [DateTime]) {
-                $created = $key.created_at.ToString("yyyy-MM-dd")
-            } else {
-                $created = $key.created_at.ToString().Substring(0,10)
-            }
-            Write-Host "  $num. $name (created: $created)"
+            $created = if ($k.created_at) { $k.created_at.ToString("yyyy-MM-dd") } else { "unknown" }
+            Write-Host "  $num. $($k.name) (created: $created)"
         }
 
-        Write-Host "`nSelect a key to use (1-$keyCount), or press Enter to create a new one: " -NoNewline
+        Write-Host "`nSelect a key to use (1-$($keys.Count)), or press Enter to create a new one: " -NoNewline
         $selection = Read-Host
 
-        if ($selection -match '^\d+$' -and [int]$selection -ge 1 -and [int]$selection -le $keyCount) {
-            $selectedKey = $keysResponse[[int]$selection - 1].api_key
+        if ($selection -match '^\d+$' -and [int]$selection -ge 1 -and [int]$selection -le $keys.Count) {
             Write-Host "Using existing API key." -ForegroundColor Green
-            return $selectedKey
+            return $keys[[int]$selection - 1].api_key
         }
     }
 
     # Create new API key
     Write-Host "Creating new API key..." -ForegroundColor Yellow
-    $newKey = New-ApiKey
     $keyName = "claude-local-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-
-    $createBody = @{
-        api_key = $newKey
-        name = $keyName
-        user_id = $userId
-    } | ConvertTo-Json
+    $createBody = @{ name = $keyName } | ConvertTo-Json
 
     try {
-        $createResponse = Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/api_keys" `
+        $createResp = Invoke-RestMethod -Uri "$BaseUrl/v1/auth/keys" `
             -Method Post `
             -Headers @{
-                "apikey" = $anonKey
                 "Authorization" = "Bearer $accessToken"
                 "Content-Type" = "application/json"
-                "Prefer" = "return=representation"
             } `
             -Body $createBody `
             -ErrorAction Stop
 
         Write-Host "Successfully created new API key: $keyName" -ForegroundColor Green
-        return $createResponse[0].api_key
+        return $createResp.api_key
     }
     catch {
-        Write-Host "Error: Failed to create API key - $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Failed to create API key: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 }
@@ -179,8 +125,11 @@ function Get-ApiKeyFromLogin {
 # Load existing configuration
 if (Test-Path $ConfigFile) {
     . $ConfigFile
-    $script:ApiKey = $env:LLAMA_API_KEY
-    $script:BaseUrl = $env:ANTHROPIC_BASE_URL
+    $script:ApiKey = $env:CLAUDE_LOCAL_API_KEY
+    $script:BaseUrl = $env:CLAUDE_LOCAL_URL
+    # Clean up
+    Remove-Item Env:\CLAUDE_LOCAL_API_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:\CLAUDE_LOCAL_URL -ErrorAction SilentlyContinue
 }
 
 # Handle configuration commands
@@ -201,12 +150,12 @@ if ($SetUrl) {
 if ($Config) {
     Write-Host "Current configuration ($ConfigFile):" -ForegroundColor Cyan
     if ($script:ApiKey) {
-        Write-Host "  API Key: ********** (set)" -ForegroundColor Green
+        Write-Host "  API Key: $($script:ApiKey.Substring(0, [Math]::Min(10, $script:ApiKey.Length)))... (set)" -ForegroundColor Green
     } else {
         Write-Host "  API Key: (not set)" -ForegroundColor Yellow
     }
     if ($script:BaseUrl) {
-        Write-Host "  Base URL: $script:BaseUrl"
+        Write-Host "  Base URL: $($script:BaseUrl)"
     } else {
         Write-Host "  Base URL: $DefaultBaseUrl (default)"
     }
@@ -216,7 +165,7 @@ if ($Config) {
 if ($ResetConfig) {
     if (Test-Path $ConfigFile) {
         Remove-Item $ConfigFile
-        Write-Host "Configuration reset. File removed: $ConfigFile" -ForegroundColor Green
+        Write-Host "Configuration reset." -ForegroundColor Green
     } else {
         Write-Host "No configuration file found."
     }
@@ -235,13 +184,14 @@ if ($Login) {
 
     $password = Read-Host "Password" -AsSecureString
 
-    $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password
+    $authUrl = if ($script:BaseUrl) { $script:BaseUrl } else { $DefaultBaseUrl }
+    $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -BaseUrl $authUrl
 
     if ($retrievedKey) {
         $script:ApiKey = $retrievedKey
         Save-Config
         Write-Host ""
-        Write-Host "✓ API key configured successfully!" -ForegroundColor Green
+        Write-Host "API key configured successfully!" -ForegroundColor Green
         Write-Host "  Config saved to: $ConfigFile"
         Write-Host ""
         Write-Host "You can now use: .\claude-local.ps1 `"Your prompt`""
@@ -257,15 +207,12 @@ if (-not $script:ApiKey) {
     Write-Host ""
     Write-Host "Welcome to Claude Local!" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "No API key found. To use Claude Code with your local AI Stack," -ForegroundColor Yellow
-    Write-Host "you'll need to authenticate and retrieve your API key." -ForegroundColor Yellow
+    Write-Host "No API key found." -ForegroundColor Yellow
     Write-Host ""
 
     $response = Read-Host "Would you like to log in now? (y/n)"
 
     if ($response -match '^[Yy]') {
-        Write-Host ""
-        Write-Host "Starting login process..." -ForegroundColor Cyan
         Write-Host ""
 
         $email = Read-Host "Email"
@@ -275,184 +222,97 @@ if (-not $script:ApiKey) {
         }
 
         $password = Read-Host "Password" -AsSecureString
-
-        $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password
+        $authUrl = if ($script:BaseUrl) { $script:BaseUrl } else { $DefaultBaseUrl }
+        $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -BaseUrl $authUrl
 
         if ($retrievedKey) {
             $script:ApiKey = $retrievedKey
             Save-Config
             Write-Host ""
-            Write-Host "✓ API key configured successfully!" -ForegroundColor Green
+            Write-Host "API key configured! Continuing..." -ForegroundColor Green
             Write-Host ""
-            Write-Host "You're all set! Continuing with Claude Code..." -ForegroundColor Cyan
-            Write-Host ""
-
-            # Update environment for this session
-            $env:ANTHROPIC_API_KEY = $script:ApiKey
-            $env:LLAMA_API_KEY = $script:ApiKey
-        }
-        else {
-            Write-Host ""
-            Write-Host "Failed to retrieve API key." -ForegroundColor Red
-            Write-Host ""
-            Write-Host "You can try again or set a key manually:" -ForegroundColor Yellow
-            Write-Host "  .\claude-local.ps1              # Try again"
-            Write-Host "  .\claude-local.ps1 -SetKey <key>  # Set manually"
-            Write-Host ""
+        } else {
             exit 1
         }
-    }
-    else {
+    } else {
         Write-Host ""
-        Write-Host "No problem! You can authenticate later using:" -ForegroundColor Yellow
-        Write-Host "  .\claude-local.ps1 -Login         # Login to get a key"
-        Write-Host "  .\claude-local.ps1 -SetKey <key>  # Set a key manually"
-        Write-Host ""
+        Write-Host "Run: .\claude-local.ps1 -Login" -ForegroundColor Yellow
         exit 1
     }
 }
 
 # Set environment variables
 $env:ANTHROPIC_API_KEY = $script:ApiKey
-$env:LLAMA_API_KEY = $script:ApiKey
 $env:ANTHROPIC_BASE_URL = if ($script:BaseUrl) { $script:BaseUrl } else { $DefaultBaseUrl }
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
 
-# Validate API key before launching Claude
+# Validate API key
 Write-Host "Validating API key..." -ForegroundColor Cyan
 
 try {
-    $validationResponse = Invoke-WebRequest -Uri "$env:ANTHROPIC_BASE_URL/v1/models" `
-        -Headers @{ "Authorization" = "Bearer $script:ApiKey" } `
-        -Method Get `
-        -UseBasicParsing `
-        -ErrorAction Stop
+    $null = Invoke-WebRequest -Uri "$env:ANTHROPIC_BASE_URL/v1/models" `
+        -Headers @{ "Authorization" = "Bearer $($script:ApiKey)" } `
+        -Method Get -UseBasicParsing -ErrorAction Stop
 
-    Write-Host "✓ API key valid" -ForegroundColor Green
+    Write-Host "API key valid" -ForegroundColor Green
     Write-Host ""
 }
 catch {
     $statusCode = $_.Exception.Response.StatusCode.value__
-
     if ($statusCode -eq 401 -or $statusCode -eq 403) {
-        Write-Host ""
-        Write-Host "❌ API key validation failed: Invalid or expired key" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Your API key is not valid. This can happen if:" -ForegroundColor Yellow
-        Write-Host "  • The key was deleted or revoked"
-        Write-Host "  • The key expired"
-        Write-Host "  • You're using an old key from a different setup"
-        Write-Host ""
-
-        # Prompt user to log in
-        $response = Read-Host "Would you like to log in now to get a valid key? (y/n)"
-
+        Write-Host "API key invalid or expired." -ForegroundColor Red
+        $response = Read-Host "Log in again? (y/n)"
         if ($response -match '^[Yy]') {
-            Write-Host ""
-            Write-Host "Starting login process..." -ForegroundColor Cyan
-            Write-Host ""
-
             $email = Read-Host "Email"
-            if (-not $email) {
-                Write-Host "Error: Email required" -ForegroundColor Red
-                exit 1
-            }
-
             $password = Read-Host "Password" -AsSecureString
-
-            $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password
-
+            $authUrl = if ($script:BaseUrl) { $script:BaseUrl } else { $DefaultBaseUrl }
+            $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -BaseUrl $authUrl
             if ($retrievedKey) {
                 $script:ApiKey = $retrievedKey
                 Save-Config
-                Write-Host ""
-                Write-Host "✓ API key configured successfully!" -ForegroundColor Green
-                Write-Host "  Continuing with Claude Code..."
-                Write-Host ""
-
-                # Update environment for this session
                 $env:ANTHROPIC_API_KEY = $script:ApiKey
-                $env:LLAMA_API_KEY = $script:ApiKey
-            }
-            else {
-                Write-Host ""
-                Write-Host "Failed to retrieve API key." -ForegroundColor Red
-                Write-Host ""
-                Write-Host "You can also set a key manually:" -ForegroundColor Yellow
-                Write-Host "  .\claude-local.ps1 -SetKey <your-key>"
-                Write-Host ""
-                exit 1
-            }
-        }
-        else {
-            Write-Host ""
-            Write-Host "Alternatively, you can:" -ForegroundColor Yellow
-            Write-Host "  .\claude-local.ps1 -Login          # Run login separately"
-            Write-Host "  .\claude-local.ps1 -SetKey <key>  # Set a key manually"
-            Write-Host "  .\claude-local.ps1 -Config         # Show current configuration"
-            Write-Host ""
-            exit 1
-        }
-    }
-    else {
-        Write-Host ""
-        Write-Host "⚠️  Warning: Could not validate API key (HTTP $statusCode)" -ForegroundColor Yellow
-        Write-Host "The AI Stack may not be reachable at: $env:ANTHROPIC_BASE_URL"
-        Write-Host ""
-        Write-Host "Continuing anyway... (use Ctrl+C to cancel)"
-        Start-Sleep -Seconds 2
+            } else { exit 1 }
+        } else { exit 1 }
+    } else {
+        Write-Host "Warning: Could not validate API key (HTTP $statusCode). Continuing..." -ForegroundColor Yellow
     }
 }
 
-# Check if user specified a model
+# Model selection
 $hasModel = $false
 foreach ($arg in $ClaudeArgs) {
-    if ($arg -eq "--model" -or $arg -eq "-m" -or $arg -eq "--help" -or $arg -eq "-h" -or $arg -eq "--version" -or $arg -eq "-v") {
+    if ($arg -eq "--model" -or $arg -eq "--help" -or $arg -eq "-h" -or $arg -eq "--version" -or $arg -eq "-v") {
         $hasModel = $true
         break
     }
 }
 
-# If no model specified, fetch available models and prompt
 if (-not $hasModel) {
-    Write-Host "Fetching available models from AI Stack..." -ForegroundColor Cyan
-
+    Write-Host "Fetching available models..." -ForegroundColor Cyan
     try {
-        $modelsResponse = Invoke-RestMethod -Uri "$env:ANTHROPIC_BASE_URL/v1/models" `
-            -Headers @{ "Authorization" = "Bearer $env:LLAMA_API_KEY" } `
-            -Method Get `
-            -ErrorAction Stop
+        # Use public chat-models endpoint (no auth needed)
+        $modelsResp = Invoke-RestMethod -Uri "$env:ANTHROPIC_BASE_URL/model/chat-models" `
+            -Method Get -ErrorAction Stop
 
-        if ($modelsResponse.data -and $modelsResponse.data.Count -gt 0) {
-            $modelList = @()
-            foreach ($model in $modelsResponse.data) {
-                $modelList += $model.id
-            }
-
-            if ($modelList.Count -eq 1) {
-                # Only one model available, auto-select it
-                $selectedModel = $modelList[0]
-                Write-Host "Using model: $selectedModel" -ForegroundColor Green
-                $ClaudeArgs = @("--model", $selectedModel) + $ClaudeArgs
-            }
-            else {
-                # Multiple models, let user choose
-                Write-Host ""
-                Write-Host "Select a model to use:" -ForegroundColor Yellow
-
-                $i = 1
-                foreach ($modelId in $modelList) {
-                    Write-Host "  $i) $modelId"
-                    $i++
+        if ($modelsResp -and $modelsResp.Count -gt 0) {
+            if ($modelsResp.Count -eq 1) {
+                $m = $modelsResp[0]
+                $hostLabel = if ($m.is_local) { "Ellie" } else { "Sparky" }
+                $displayName = if ($m.alias) { $m.alias } else { $m.id }
+                Write-Host "Using model: $displayName ($hostLabel)" -ForegroundColor Green
+                $ClaudeArgs = @("--model", $m.id) + $ClaudeArgs
+            } else {
+                Write-Host "Select a model:" -ForegroundColor Yellow
+                for ($i = 0; $i -lt $modelsResp.Count; $i++) {
+                    $m = $modelsResp[$i]
+                    $hostLabel = if ($m.is_local) { "Ellie" } else { "Sparky" }
+                    $displayName = if ($m.alias) { $m.alias } else { $m.id }
+                    Write-Host "  $($i+1)) $displayName ($hostLabel)"
                 }
-
-                Write-Host ""
-                $selection = Read-Host "Enter number (or press Enter to skip)"
-
-                if ($selection -match '^\d+$' -and [int]$selection -ge 1 -and [int]$selection -le $modelList.Count) {
-                    $selectedModel = $modelList[[int]$selection - 1]
-                    Write-Host "Using model: $selectedModel" -ForegroundColor Green
-                    $ClaudeArgs = @("--model", $selectedModel) + $ClaudeArgs
+                $sel = Read-Host "Enter number"
+                if ($sel -match '^\d+$' -and [int]$sel -ge 1 -and [int]$sel -le $modelsResp.Count) {
+                    $selected = $modelsResp[[int]$sel - 1]
+                    $ClaudeArgs = @("--model", $selected.id) + $ClaudeArgs
                 }
             }
         }
@@ -462,5 +322,4 @@ if (-not $hasModel) {
     }
 }
 
-# Run Claude Code with arguments
 & claude @ClaudeArgs

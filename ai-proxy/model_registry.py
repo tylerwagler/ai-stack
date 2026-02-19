@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Default host for models without an explicit host field in models.ini
-DEFAULT_HOST = os.environ.get("DEFAULT_MODEL_HOST", "llama-server:8082")
+DEFAULT_HOST = os.environ.get("DEFAULT_MODEL_HOST", "172.17.0.1:8082")
 
 @dataclass
 class ModelConfig:
@@ -29,9 +29,9 @@ class ModelConfig:
 
     @property
     def is_local(self) -> bool:
-        """True if this model runs on a local container (llama-server)."""
+        """True if this model runs on a local host (Docker bridge gateway or localhost)."""
         h = self.host.split(":")[0]
-        return h in ("llama-server", "localhost", "127.0.0.1")
+        return h in ("llama-server", "localhost", "127.0.0.1", "172.17.0.1")
 
 class ModelRegistry:
     def __init__(self, config_path: str = "/app/models.ini"):
@@ -97,7 +97,11 @@ class ModelRegistry:
         return self.models.get(model_id)
 
     def find_model(self, name: str) -> Optional[ModelConfig]:
-        """Find a model by id, alias, or HF path (case-insensitive)."""
+        """Find a model by id, alias, or HF path (case-insensitive).
+
+        Also handles llama.cpp HF-cached filenames where slashes become
+        underscores (e.g. 'org_repo_file.gguf' matches 'hf://org/repo/file.gguf').
+        """
         if not self.models:
             self.load_models()
 
@@ -105,6 +109,14 @@ class ModelRegistry:
         for m in self.models.values():
             if name_lower in (m.id.lower(), m.name.lower(), m.path.lower()):
                 return m
+
+        # Fallback: match HF cache filenames (org_repo_file.gguf → hf://org/repo/file.gguf)
+        name_norm = name_lower.replace("/", "_").replace(":", "_").lstrip("_")
+        for m in self.models.values():
+            path_norm = m.path.lower().replace("hf://", "").replace("/", "_")
+            if name_norm == path_norm:
+                return m
+
         return None
 
     def list_models(self) -> List[ModelConfig]:

@@ -11,7 +11,6 @@ import socketserver
 import sys
 import threading
 import time
-import urllib.request
 
 import psutil
 import pynvml
@@ -20,13 +19,7 @@ import pynvml
 # Configuration
 # ---------------------------------------------------------------------------
 PORT = int(os.environ.get("METRICS_PORT", "3001"))
-METRICS_API_KEY = os.environ.get("METRICS_API_KEY", "")
 POLL_INTERVAL = 0.1  # 100 ms
-
-LLAMA_HOST = os.environ.get("LLAMA_HOST", "")
-LLAMA_PORT = os.environ.get("LLAMA_PORT", "8082")
-LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY", "")
-LLAMA_API_PREFIX = os.environ.get("LLAMA_API_PREFIX", "/chat")
 VERBOSE = os.environ.get("VERBOSE", "0") == "1"
 
 # ---------------------------------------------------------------------------
@@ -101,8 +94,8 @@ class GPUCollector:
         try:
             ps = pynvml.nvmlDeviceGetPerformanceState(handle)
         except Exception:
-            ps = 0
-        ps_desc = P_STATE_DESC.get(ps, f"P{ps}")
+            ps = -1
+        ps_desc = P_STATE_DESC.get(ps, f"P{ps}" if ps >= 0 else "Unknown")
 
         # Utilization
         try:
@@ -134,6 +127,14 @@ class GPUCollector:
             power_limit = pynvml.nvmlDeviceGetEnforcedPowerLimit(handle)  # mW
         except Exception:
             power_limit = 0
+        try:
+            power_max = pynvml.nvmlDeviceGetPowerManagementLimitConstraints(handle)[1]  # mW
+        except Exception:
+            power_max = power_limit
+        # Fallback TDP for SoC GPUs that don't report power limits via NVML
+        if power_max == 0:
+            GPU_TDP_FALLBACK = {"NVIDIA GB10": 140000}
+            power_max = GPU_TDP_FALLBACK.get(name, 0)
 
         # Clocks
         clocks = self._read_clocks(handle)
@@ -168,6 +169,7 @@ class GPUCollector:
             "target_fan_percent": fan,
             "power_usage_mw": power_usage,
             "power_limit_mw": power_limit,
+            "power_max_mw": power_max,
             "resources": {
                 "gpu_load_percent": gpu_util,
                 "memory_load_percent": mem_util,
@@ -294,7 +296,38 @@ class GPUCollector:
 def collect_host_metrics():
     mem = psutil.virtual_memory()
     load = os.getloadavg()
-    return {
+
+    # Read system fan RPM from sysfs via psutil (returns {} on hosts without sysfs fans)
+    fan_rpm = 0
+    try:
+        fans = psutil.sensors_fans()
+        if fans:
+            # Use max RPM across all detected fans; ignore values < 100
+            # (some sensors like acpi_fan report state codes, not RPM)
+            for entries in fans.values():
+                for entry in entries:
+                    if entry.current >= 100 and entry.current > fan_rpm:
+                        fan_rpm = int(entry.current)
+    except Exception:
+        pass
+
+    # Read CPU temperature from thermal sensors (returns None on hosts without sensors)
+    cpu_temp = None
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            # Prefer dedicated CPU sensors; fall back to ACPI thermal zones
+            for name in ("coretemp", "k10temp", "zenpower", "cpu_thermal"):
+                if name in temps and temps[name]:
+                    cpu_temp = round(max(e.current for e in temps[name]), 1)
+                    break
+            if cpu_temp is None and "acpitz" in temps and temps["acpitz"]:
+                # ACPI zones: take the max reading (typically CPU package)
+                cpu_temp = round(max(e.current for e in temps["acpitz"]), 1)
+    except Exception:
+        pass
+
+    result = {
         "hostname": os.uname().nodename,
         "cpu_load_percent": psutil.cpu_percent(interval=None),
         "memory_total_mb": int(mem.total / (1024 * 1024)),
@@ -302,106 +335,11 @@ def collect_host_metrics():
         "load_avg_1m": round(load[0], 2),
         "load_avg_5m": round(load[1], 2),
         "uptime_seconds": int(time.time() - psutil.boot_time()),
+        "fan_rpm": fan_rpm,
     }
-
-
-# ---------------------------------------------------------------------------
-# AI Service Poller (polls llama-server / vLLM for status)
-# ---------------------------------------------------------------------------
-class AIServicePoller:
-    def __init__(self):
-        self.metrics = self._empty()
-        self._lock = threading.Lock()
-
-    def _empty(self):
-        return {
-            "status": "offline",
-            "load_progress": 0,
-            "modelName": "",
-            "modelPath": "",
-            "slots_used": 0,
-            "slots_total": 0,
-            "n_ctx": 0,
-            "prompt_tokens_total": 0,
-            "prompt_seconds_total": 0,
-            "tokens_predicted_total": 0,
-            "tokens_predicted_seconds_total": 0,
-            "prompt_tokens_seconds": 0,
-            "predicted_tokens_seconds": 0,
-            "requests_processing": 0,
-            "requests_deferred": 0,
-            "n_decode_total": 0,
-            "n_tokens_max": 0,
-            "n_busy_slots_per_decode": 0,
-            "kv_cache_usage_ratio": 0.0,
-            "kv_cache_tokens": 0,
-        }
-
-    def get(self):
-        with self._lock:
-            return dict(self.metrics)
-
-    def poll(self):
-        if not LLAMA_HOST:
-            return
-        base = f"http://{LLAMA_HOST}:{LLAMA_PORT}{LLAMA_API_PREFIX}"
-        health_url = f"{base}/health"
-        try:
-            req = urllib.request.Request(health_url)
-            if LLAMA_API_KEY:
-                req.add_header("Authorization", f"Bearer {LLAMA_API_KEY}")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read())
-                status = data.get("status", "unknown")
-                progress = 1.0 if status == "ok" else data.get("loading_progress", 0)
-                with self._lock:
-                    self.metrics["status"] = "ready" if status == "ok" else status
-                    self.metrics["load_progress"] = progress
-                    slots = data.get("slots", [])
-                    self.metrics["slots_total"] = len(slots)
-                    self.metrics["slots_used"] = sum(1 for s in slots if s.get("is_processing"))
-        except Exception:
-            with self._lock:
-                self.metrics = self._empty()
-
-        # Also fetch /metrics for token throughput
-        metrics_url = f"{base}/metrics"
-        try:
-            req = urllib.request.Request(metrics_url)
-            if LLAMA_API_KEY:
-                req.add_header("Authorization", f"Bearer {LLAMA_API_KEY}")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                text = resp.read().decode()
-                parsed = self._parse_prometheus(text)
-                with self._lock:
-                    self.metrics["prompt_tokens_total"] = parsed.get("llamacpp:prompt_tokens_total", 0)
-                    self.metrics["prompt_seconds_total"] = parsed.get("llamacpp:prompt_seconds_total", 0)
-                    self.metrics["tokens_predicted_total"] = parsed.get("llamacpp:tokens_predicted_total", 0)
-                    self.metrics["tokens_predicted_seconds_total"] = parsed.get("llamacpp:tokens_predicted_seconds_total", 0)
-                    self.metrics["prompt_tokens_seconds"] = parsed.get("llamacpp:prompt_tokens_seconds", 0)
-                    self.metrics["predicted_tokens_seconds"] = parsed.get("llamacpp:predicted_tokens_seconds", 0)
-                    self.metrics["kv_cache_usage_ratio"] = parsed.get("llamacpp:kv_cache_usage_ratio", 0)
-                    self.metrics["kv_cache_tokens"] = int(parsed.get("llamacpp:kv_cache_tokens", 0))
-                    self.metrics["requests_processing"] = int(parsed.get("llamacpp:requests_processing", 0))
-                    self.metrics["requests_deferred"] = int(parsed.get("llamacpp:requests_deferred", 0))
-                    self.metrics["n_decode_total"] = int(parsed.get("llamacpp:n_decode_total", 0))
-        except Exception:
-            pass
-
-    @staticmethod
-    def _parse_prometheus(text):
-        result = {}
-        for line in text.splitlines():
-            if line.startswith("#") or not line.strip():
-                continue
-            parts = line.split()
-            if len(parts) >= 2:
-                key = parts[0].split("{")[0]
-                try:
-                    result[key] = float(parts[1])
-                except ValueError:
-                    pass
-        return result
+    if cpu_temp is not None:
+        result["cpu_temp_celsius"] = cpu_temp
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -409,12 +347,12 @@ class AIServicePoller:
 # ---------------------------------------------------------------------------
 class MetricsStore:
     def __init__(self):
-        self._data = {"host": {}, "gpus": [], "ai_service": {}}
+        self._data = {"host": {}, "gpus": []}
         self._lock = threading.Lock()
 
-    def update(self, host, gpus, ai_service):
+    def update(self, host, gpus):
         with self._lock:
-            self._data = {"host": host, "gpus": gpus, "ai_service": ai_service}
+            self._data = {"host": host, "gpus": gpus}
 
     def get(self):
         with self._lock:
@@ -427,20 +365,12 @@ store = MetricsStore()
 # ---------------------------------------------------------------------------
 # Polling Thread
 # ---------------------------------------------------------------------------
-def poll_loop(gpu_collector, ai_poller):
-    ai_tick = 0
+def poll_loop(gpu_collector):
     while True:
         try:
             gpus = gpu_collector.collect()
             host = collect_host_metrics()
-
-            # Poll AI service less frequently (every 5s)
-            ai_tick += 1
-            if ai_tick >= 50:  # 50 * 100ms = 5s
-                ai_poller.poll()
-                ai_tick = 0
-
-            store.update(host, gpus, ai_poller.get())
+            store.update(host, gpus)
         except Exception as e:
             print(f"Poll error: {e}", file=sys.stderr)
         time.sleep(POLL_INTERVAL)
@@ -471,14 +401,7 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def _check_auth(self):
-        if not METRICS_API_KEY:
-            return True
-        key = self.headers.get("x-api-key", "")
-        if not key:
-            auth = self.headers.get("Authorization", "")
-            if auth.startswith("Bearer "):
-                key = auth[7:]
-        return key == METRICS_API_KEY
+        return True
 
     def _json_response(self, code, data):
         body = json.dumps(data).encode()
@@ -508,10 +431,9 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 # ---------------------------------------------------------------------------
 def main():
     gpu_collector = GPUCollector()
-    ai_poller = AIServicePoller()
 
     # Start polling thread
-    t = threading.Thread(target=poll_loop, args=(gpu_collector, ai_poller), daemon=True)
+    t = threading.Thread(target=poll_loop, args=(gpu_collector,), daemon=True)
     t.start()
 
     # Graceful shutdown

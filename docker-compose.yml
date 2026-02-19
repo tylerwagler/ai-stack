@@ -3,8 +3,7 @@ include:
 
 services:
   # ---------------------------------------------------------
-  # LLM Inference Engine (Port 8082, localhost only)
-  # llama.cpp CUDA server for local model inference
+  # llama.cpp image (build-only target — model-manager spawns containers from this image)
   # ---------------------------------------------------------
   llama-server:
     build:
@@ -14,30 +13,30 @@ services:
       args:
         CUDA_VERSION: "13.1.1"
     image: llama-cpp-server:local
-    container_name: llama-server
+    profiles:
+      - build-only
+
+  # ---------------------------------------------------------
+  # MODEL MANAGER (Port 8100)
+  # Dynamic container manager — loads/unloads llama.cpp models on demand
+  # ---------------------------------------------------------
+  model-manager:
+    build:
+      context: ./model-manager
+      args:
+        MODELS_INI: ellie-models.ini
+    container_name: model-manager
     restart: always
-    ports:
-      - "127.0.0.1:8082:8082"
+    network_mode: host
     volumes:
-      - llama_cache:/models
-      - ./models.ini:/app/models.ini
-      - ./llama.cpp/entrypoint.sh:/entrypoint.sh
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/tyler/.cache/llama.cpp:/cache/llama.cpp
+      - /home/tyler/.cache/huggingface/hub:/cache/huggingface/hub:ro
     environment:
-      - LLAMA_API_KEY=${LLAMA_API_KEY}
-    entrypoint: ["/entrypoint.sh"]
-    healthcheck:
-      test: ["CMD", "sh", "-c", "curl -f -H \"Authorization: Bearer $LLAMA_API_KEY\" http://localhost:8082/chat/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 240s
+      - LLAMA_IMAGE=llama-cpp-server:local
+      - MAX_CONCURRENT_MODELS=1
+      - LLAMA_CACHE_DIR=/cache/llama.cpp
+      - HF_CACHE_DIR=/cache/huggingface/hub
 
   ai-proxy:
     build:
@@ -48,12 +47,14 @@ services:
       - "8081:8081"
     environment:
       - PROXY_PORT=8081
-      - LLAMA_API_KEY=${LLAMA_API_KEY}
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5433
+      - ELLIE_MANAGER_HOST=${ELLIE_MANAGER_HOST:-172.17.0.1:8100}
+      - SPARKY_MANAGER_HOST=${SPARKY_MANAGER_HOST:-10.20.10.10:8100}
+      - SUPABASE_INTERNAL_URL=http://ai-supabase-kong:8000
     networks:
       - default
       - ai-stack-net
@@ -76,12 +77,6 @@ services:
     restart: always
     ports:
       - "3001:3001"
-    environment:
-      - LLAMA_HOST=llama-server
-      - LLAMA_PORT=8082
-      - LLAMA_API_KEY=${LLAMA_API_KEY}
-      - LLAMA_API_PREFIX=/chat
-      - METRICS_API_KEY=${METRICS_API_KEY}
     networks:
       - default
       - ai-stack-net
@@ -147,8 +142,6 @@ services:
     networks:
       - default
       - ai-stack-net
-    environment:
-      - METRICS_API_KEY=${METRICS_API_KEY}
 
 networks:
   ai-stack-net:

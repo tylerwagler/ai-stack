@@ -1,11 +1,15 @@
 #!/bin/bash
-
-# Wrapper for Claude Code CLI to use Local AI Stack
-# Usage: ./claude-local [args]
-#        ./claude-local --login                 # Login and retrieve/create API key
-#        ./claude-local --set-key <api-key>     # Set API key manually
-#        ./claude-local --set-url <base-url>    # Set base URL
-#        ./claude-local --config                # Show current config
+# claude-local — Local development wrapper for Claude Code
+#
+# This version is for development use when running on the AI Stack host.
+# For distributable installs, use: curl -fsSL http://ellie:3000/install/setup.sh | bash
+#
+# Usage:
+#   ./claude-local [args]
+#   ./claude-local --login                 # Login and retrieve/create API key
+#   ./claude-local --set-key <api-key>     # Set API key manually
+#   ./claude-local --set-url <base-url>    # Set base URL
+#   ./claude-local --config                # Show current config
 
 CONFIG_DIR="$HOME/.config/claude-local"
 CONFIG_FILE="$CONFIG_DIR/env"
@@ -14,170 +18,140 @@ CONFIG_FILE="$CONFIG_DIR/env"
 DEFAULT_AI_STACK_HOST="ellie"
 DEFAULT_AI_STACK_IP="10.20.10.5"
 
+# --- JSON helpers (jq preferred, python3 fallback) ---
+json_get() {
+    local json="$1" field="$2"
+    if command -v jq &> /dev/null; then
+        echo "$json" | jq -r "$field // empty" 2>/dev/null
+    else
+        echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); v=$field; print(v if v is not None else '')" 2>/dev/null
+    fi
+}
+
+json_get_py() {
+    local json="$1" jq_expr="$2" py_expr="$3"
+    if command -v jq &> /dev/null; then
+        echo "$json" | jq -r "$jq_expr" 2>/dev/null
+    else
+        echo "$json" | python3 -c "import sys,json; data=json.load(sys.stdin); $py_expr" 2>/dev/null
+    fi
+}
+
 # Helper function to save config
 save_config() {
     mkdir -p "$CONFIG_DIR"
     {
-        [ -n "$LLAMA_API_KEY" ] && echo "export LLAMA_API_KEY=$LLAMA_API_KEY"
-        [ -n "$ANTHROPIC_BASE_URL" ] && echo "export ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL"
-        [ -n "$AI_STACK_HOST" ] && echo "export AI_STACK_HOST=$AI_STACK_HOST"
-        [ -n "$AI_STACK_IP" ] && echo "export AI_STACK_IP=$AI_STACK_IP"
+        [ -n "$CLAUDE_LOCAL_API_KEY" ] && echo "CLAUDE_LOCAL_API_KEY=$CLAUDE_LOCAL_API_KEY"
+        [ -n "$CLAUDE_LOCAL_URL" ] && echo "CLAUDE_LOCAL_URL=$CLAUDE_LOCAL_URL"
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
 }
 
-# Helper function to generate secure API key
-generate_api_key() {
-    # Generate cryptographically secure random key
-    local random_part=$(openssl rand -hex 16 | cut -c1-30)
-    echo "sk_ai_${random_part}"
-}
-
-# Helper function to authenticate and retrieve/create API key
+# Helper function to authenticate via ai-proxy auth endpoints
 login_and_get_key() {
     local email="$1"
     local password="$2"
+    local base_url="$3"
 
-    # Supabase is exposed via temper-view on port 3000, NOT ai-proxy on 8081
-    # The Nginx reverse proxy routes /auth/v1/ and /rest/v1/ to Supabase Kong
-    # Use localhost if running on the AI Stack host
-    [ -n "$DEBUG" ] && echo "Debug: hostname=$(hostname), AI_STACK_HOST=$AI_STACK_HOST" >&2
-    if [[ "$(hostname)" == "$AI_STACK_HOST" ]]; then
-        local supabase_url="http://localhost:3000"
-        [ -n "$DEBUG" ] && echo "Debug: Using localhost (on AI Stack host)" >&2
+    # Build JSON payload
+    local json_payload
+    if command -v jq &> /dev/null; then
+        json_payload=$(jq -n --arg e "$email" --arg p "$password" '{email:$e, password:$p}')
     else
-        local supabase_url="http://${AI_STACK_IP:-$DEFAULT_AI_STACK_IP}:3000"
-        [ -n "$DEBUG" ] && echo "Debug: Using IP address (remote connection)" >&2
+        local esc_pass="${password//\\/\\\\}"
+        esc_pass="${esc_pass//\"/\\\"}"
+        json_payload="{\"email\":\"${email}\",\"password\":\"${esc_pass}\"}"
     fi
-
-    # Override if user has set a custom Supabase URL
-    if [ -n "$SUPABASE_URL" ]; then
-        supabase_url="$SUPABASE_URL"
-    fi
-
-    # Supabase anon key (from temper-view/src/lib/supabase.ts)
-    local anon_key="eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJyb2xlIjogImFub24iLCAiaXNzIjogInN1cGFiYXNlIiwgImlhdCI6IDE3Njk1MjYyNTgsICJleHAiOiAyMDg0ODg2MjU4fQ.UYjtcXHj4l-9rEHMzNk2rqc-djmaPTtumgylFpG5NfA"
 
     echo "Authenticating with AI Stack..." >&2
-    [ -n "$DEBUG" ] && echo "Debug: URL: $supabase_url, Email: $email" >&2
 
-    # Build JSON payload using printf to properly escape special characters
-    # This handles passwords with special chars like !, $, ", etc.
-    local json_payload=$(printf '{"email":"%s","password":"%s"}' "$email" "$password" | sed 's/"/\\"/g' | sed 's/\\/\\\\/g')
-
-    # Actually, better to use jq if available, otherwise use a simpler approach
-    if command -v jq &> /dev/null; then
-        local json_payload=$(jq -n --arg email "$email" --arg password "$password" '{email: $email, password: $password}')
-    else
-        # Escape backslashes and quotes in password
-        local escaped_password="${password//\\/\\\\}"
-        escaped_password="${escaped_password//\"/\\\"}"
-        local json_payload="{\"email\":\"${email}\",\"password\":\"${escaped_password}\"}"
-    fi
-
-    # Authenticate with Supabase
-    local auth_response=$(curl -s -X POST "${supabase_url}/auth/v1/token?grant_type=password" \
-        -H "apikey: ${anon_key}" \
+    local response
+    response=$(curl -s -X POST "${base_url}/v1/auth/login" \
         -H "Content-Type: application/json" \
-        -d "${json_payload}")
+        -d "$json_payload")
 
-    [ -n "$DEBUG" ] && echo "Debug: Auth response: $auth_response" >&2
-
-    # Extract access token
-    local access_token=$(echo "$auth_response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('access_token', ''))" 2>/dev/null)
+    local access_token
+    access_token=$(json_get "$response" '.access_token')
 
     if [ -z "$access_token" ]; then
-        local error_msg=$(echo "$auth_response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('error_description', data.get('msg', data.get('message', 'Unknown error'))))" 2>/dev/null)
+        local error_msg
+        error_msg=$(json_get_py "$response" '.error.message // .msg // "Authentication failed"' \
+            "e=data.get('error',{}); print(e.get('message','') if isinstance(e,dict) else data.get('msg','Authentication failed'))")
         echo "" >&2
-        echo "❌ Authentication failed: ${error_msg}" >&2
+        echo "Authentication failed: $error_msg" >&2
         echo "" >&2
         echo "Common issues:" >&2
-        echo "  • Wrong password" >&2
-        echo "  • Email not registered (sign up at http://localhost:3000 first)" >&2
-        echo "  • Email not confirmed (check your inbox)" >&2
+        echo "  - Wrong password" >&2
+        echo "  - Email not registered (sign up at http://localhost:3000 first)" >&2
+        echo "  - Email not confirmed" >&2
         echo "" >&2
         echo "Or use manual setup: $0 --set-key <your-api-key>" >&2
-        echo "" >&2
-        echo "For debugging: DEBUG=1 $0 --login" >&2
         return 1
     fi
 
-    # Extract user ID
-    local user_id=$(echo "$auth_response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('user', {}).get('id', ''))" 2>/dev/null)
+    echo "Authentication successful! Checking API keys..." >&2
 
-    echo "Authentication successful! Retrieving API keys..." >&2
+    # Check for existing keys in login response
+    local key_count
+    key_count=$(json_get_py "$response" '.api_keys | length' \
+        "print(len(data.get('api_keys',[])))")
 
-    # Fetch existing API keys for this user
-    local keys_response=$(curl -s -X GET "${supabase_url}/rest/v1/api_keys?select=api_key,name,created_at&order=created_at.desc" \
-        -H "apikey: ${anon_key}" \
-        -H "Authorization: Bearer ${access_token}" \
-        -H "Content-Type: application/json")
-
-    # Count existing keys
-    local key_count=$(echo "$keys_response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(len(data) if isinstance(data, list) else 0)" 2>/dev/null)
-
-    if [ "$key_count" -gt 0 ]; then
+    if [ "$key_count" -gt 0 ] 2>/dev/null; then
         echo "Found $key_count existing API key(s):" >&2
-        echo "$keys_response" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for i, key in enumerate(data, 1):
-    name = key.get('name', 'Unnamed')
-    created = key.get('created_at', '')[:10]
-    print(f'  {i}. {name} (created: {created}')
-" >&2
+        json_get_py "$response" \
+            '(.api_keys | to_entries[] | "  \(.key+1). \(.value.name) (created: \(.value.created_at[:10]))")' \
+            "
+for i,k in enumerate(data.get('api_keys',[]),1):
+    print(f\"  {i}. {k.get('name','Unnamed')} (created: {str(k.get('created_at',''))[:10]})\")" >&2
 
         echo "" >&2
         echo "Select a key to use (1-${key_count}), or press Enter to create a new one:" >&2
         read -r selection
 
         if [ -n "$selection" ] && [ "$selection" -ge 1 ] && [ "$selection" -le "$key_count" ] 2>/dev/null; then
-            # Use selected key
-            local selected_key=$(echo "$keys_response" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-print(data[${selection}-1]['api_key'])
-" 2>/dev/null)
-
+            local selected_key
+            selected_key=$(json_get_py "$response" \
+                ".api_keys[$((selection-1))].api_key" \
+                "print(data['api_keys'][$((selection-1))]['api_key'])")
             echo "Using existing API key." >&2
             echo "$selected_key"
             return 0
         fi
     fi
 
-    # Create new API key
+    # Create new API key via auth endpoint
     echo "Creating new API key..." >&2
-    local new_key=$(generate_api_key)
-    local key_name="claude-local-$(date +%Y%m%d-%H%M%S)"
-
-    local create_response=$(curl -s -X POST "${supabase_url}/rest/v1/api_keys" \
-        -H "apikey: ${anon_key}" \
-        -H "Authorization: Bearer ${access_token}" \
+    local create_resp
+    create_resp=$(curl -s -X POST "${base_url}/v1/auth/keys" \
+        -H "Authorization: Bearer $access_token" \
         -H "Content-Type: application/json" \
-        -H "Prefer: return=representation" \
-        -d "{\"api_key\":\"${new_key}\",\"name\":\"${key_name}\",\"user_id\":\"${user_id}\"}")
+        -d "{\"name\":\"claude-local-$(date +%Y%m%d-%H%M%S)\"}")
 
-    # Check if creation was successful
-    local created_key=$(echo "$create_response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data[0]['api_key'] if isinstance(data, list) and len(data) > 0 else '')" 2>/dev/null)
+    local new_key
+    new_key=$(json_get "$create_resp" '.api_key')
 
-    if [ -z "$created_key" ]; then
+    if [ -z "$new_key" ]; then
         echo "Error: Failed to create API key" >&2
-        [ -n "$DEBUG" ] && echo "Debug: Full response: $create_response" >&2
-        local error_msg=$(echo "$create_response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('message', data.get('error', 'Unknown error')))" 2>/dev/null)
-        if [ -n "$error_msg" ]; then
-            echo "Error message: $error_msg" >&2
-        fi
         return 1
     fi
 
+    local key_name
+    key_name=$(json_get "$create_resp" '.name')
     echo "Successfully created new API key: $key_name" >&2
-    echo "$created_key"
+    echo "$new_key"
     return 0
 }
 
 # Load saved configuration
+CLAUDE_LOCAL_API_KEY=""
+CLAUDE_LOCAL_URL=""
 if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
+    while IFS='=' read -r key value; do
+        case "$key" in
+            CLAUDE_LOCAL_API_KEY) CLAUDE_LOCAL_API_KEY="$value" ;;
+            CLAUDE_LOCAL_URL) CLAUDE_LOCAL_URL="$value" ;;
+        esac
+    done < "$CONFIG_FILE"
 fi
 
 # Set defaults if not configured
@@ -192,7 +166,7 @@ case "$1" in
             echo "Usage: $0 --set-key <api-key>"
             exit 1
         fi
-        LLAMA_API_KEY="$2"
+        CLAUDE_LOCAL_API_KEY="$2"
         save_config
         echo "API key saved to $CONFIG_FILE"
         exit 0
@@ -204,43 +178,19 @@ case "$1" in
             echo "Example: $0 --set-url http://10.20.10.5:8081"
             exit 1
         fi
-        ANTHROPIC_BASE_URL="$2"
+        CLAUDE_LOCAL_URL="$2"
         save_config
         echo "Base URL saved to $CONFIG_FILE"
         exit 0
         ;;
-    --set-host)
-        if [ -z "$2" ]; then
-            echo "Error: Hostname required"
-            echo "Usage: $0 --set-host <hostname>"
-            exit 1
-        fi
-        AI_STACK_HOST="$2"
-        save_config
-        echo "AI Stack hostname saved to $CONFIG_FILE"
-        exit 0
-        ;;
-    --set-ip)
-        if [ -z "$2" ]; then
-            echo "Error: IP address required"
-            echo "Usage: $0 --set-ip <ip-address>"
-            exit 1
-        fi
-        AI_STACK_IP="$2"
-        save_config
-        echo "AI Stack IP saved to $CONFIG_FILE"
-        exit 0
-        ;;
     --config)
         echo "Current configuration ($CONFIG_FILE):"
-        if [ -n "$LLAMA_API_KEY" ]; then
-            echo "  API Key: ********** (set)"
+        if [ -n "$CLAUDE_LOCAL_API_KEY" ]; then
+            echo "  API Key: ${CLAUDE_LOCAL_API_KEY:0:10}... (set)"
         else
             echo "  API Key: (not set)"
         fi
-        echo "  Base URL: ${ANTHROPIC_BASE_URL:-(auto-detect)}"
-        echo "  AI Stack Host: ${AI_STACK_HOST:-$DEFAULT_AI_STACK_HOST}"
-        echo "  AI Stack IP: ${AI_STACK_IP:-$DEFAULT_AI_STACK_IP}"
+        echo "  URL: ${CLAUDE_LOCAL_URL:-(auto-detect)}"
         exit 0
         ;;
     --reset-config)
@@ -256,14 +206,12 @@ case "$1" in
         echo "Login to AI Stack"
         echo ""
 
-        # Get email
         read -p "Email: " email
         if [ -z "$email" ]; then
             echo "Error: Email required"
             exit 1
         fi
 
-        # Get password (hidden)
         read -sp "Password: " password
         echo
         if [ -z "$password" ]; then
@@ -271,14 +219,22 @@ case "$1" in
             exit 1
         fi
 
-        # Authenticate and get/create API key
-        retrieved_key=$(login_and_get_key "$email" "$password")
+        # Discover base URL for auth
+        if [ -n "$CLAUDE_LOCAL_URL" ]; then
+            auth_url="$CLAUDE_LOCAL_URL"
+        elif [[ "$(hostname)" == "$AI_STACK_HOST" ]]; then
+            auth_url="http://localhost:8081"
+        else
+            auth_url="http://${AI_STACK_IP}:8081"
+        fi
+
+        retrieved_key=$(login_and_get_key "$email" "$password" "$auth_url")
 
         if [ $? -eq 0 ] && [ -n "$retrieved_key" ]; then
-            LLAMA_API_KEY="$retrieved_key"
+            CLAUDE_LOCAL_API_KEY="$retrieved_key"
             save_config
             echo ""
-            echo "✓ API key configured successfully!"
+            echo "API key configured successfully!"
             echo "  Config saved to: $CONFIG_FILE"
             echo ""
             echo "You can now use: $0 \"Your prompt\""
@@ -291,30 +247,25 @@ case "$1" in
 esac
 
 # Discover the correct base URL if not manually set
-if [ -z "$ANTHROPIC_BASE_URL" ]; then
+if [ -z "$CLAUDE_LOCAL_URL" ]; then
     if [[ "$(hostname)" == "$AI_STACK_HOST" ]]; then
-        export ANTHROPIC_BASE_URL="http://localhost:8081"
+        CLAUDE_LOCAL_URL="http://localhost:8081"
     else
         if ping -c 1 -W 1 "$AI_STACK_IP" > /dev/null 2>&1; then
-            export ANTHROPIC_BASE_URL="http://${AI_STACK_IP}:8081"
+            CLAUDE_LOCAL_URL="http://${AI_STACK_IP}:8081"
         else
-            export ANTHROPIC_BASE_URL="http://${AI_STACK_HOST}.local:8081"
+            CLAUDE_LOCAL_URL="http://${AI_STACK_HOST}.local:8081"
         fi
     fi
-else
-    export ANTHROPIC_BASE_URL
 fi
 
-# Load API Key (priority order: config file -> local .env -> prompt)
-# Config file was already loaded above
-
-# Try Local .env files if key not in config (dev environment)
-if [ -z "$LLAMA_API_KEY" ]; then
+# Load API Key from config, or try local .env (dev environment)
+if [ -z "$CLAUDE_LOCAL_API_KEY" ]; then
     SEARCH_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     for dir in "$SEARCH_PATH" "$(dirname "$SEARCH_PATH")" "/home/tyler/ai-stack"; do
         if [ -f "$dir/.env" ]; then
-            LLAMA_API_KEY=$(grep "^LLAMA_API_KEY=" "$dir/.env" | cut -d= -f2- | tr -d "[:space:]")
-            if [ -n "$LLAMA_API_KEY" ]; then
+            CLAUDE_LOCAL_API_KEY=$(grep "^LLAMA_API_KEY=" "$dir/.env" | cut -d= -f2- | tr -d "[:space:]")
+            if [ -n "$CLAUDE_LOCAL_API_KEY" ]; then
                 break
             fi
         fi
@@ -322,7 +273,7 @@ if [ -z "$LLAMA_API_KEY" ]; then
 fi
 
 # Prompt and Save if missing
-if [ -z "$LLAMA_API_KEY" ]; then
+if [ -z "$CLAUDE_LOCAL_API_KEY" ]; then
     echo ""
     echo "Welcome to Claude Local!"
     echo ""
@@ -337,25 +288,22 @@ if [ -z "$LLAMA_API_KEY" ]; then
         echo "Starting login process..."
         echo ""
 
-        # Get email
         read -p "Email: " email
         if [ -z "$email" ]; then
             echo "Error: Email required"
             exit 1
         fi
 
-        # Get password (hidden)
         read -sp "Password: " password
         echo ""
 
-        # Authenticate and get/create API key
-        retrieved_key=$(login_and_get_key "$email" "$password")
+        retrieved_key=$(login_and_get_key "$email" "$password" "$CLAUDE_LOCAL_URL")
 
         if [ $? -eq 0 ] && [ -n "$retrieved_key" ]; then
-            LLAMA_API_KEY="$retrieved_key"
+            CLAUDE_LOCAL_API_KEY="$retrieved_key"
             save_config
             echo ""
-            echo "✓ API key configured successfully!"
+            echo "API key configured successfully!"
             echo ""
             echo "You're all set! Continuing with Claude Code..."
             echo ""
@@ -379,87 +327,62 @@ if [ -z "$LLAMA_API_KEY" ]; then
     fi
 fi
 
-if [ -z "$LLAMA_API_KEY" ]; then
-    echo "Error: LLAMA_API_KEY not found. Please set it in .env or your environment."
+if [ -z "$CLAUDE_LOCAL_API_KEY" ]; then
+    echo "Error: No API key found. Please set it with: $0 --set-key <key>"
     exit 1
 fi
 
 # Validate API key before launching Claude
 echo "Validating API key..." >&2
-validation_response=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $LLAMA_API_KEY" "${ANTHROPIC_BASE_URL}/v1/models" 2>/dev/null)
+validation_response=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $CLAUDE_LOCAL_API_KEY" "${CLAUDE_LOCAL_URL}/v1/models" 2>/dev/null)
 http_code=$(echo "$validation_response" | tail -n1)
-response_body=$(echo "$validation_response" | head -n-1)
 
 if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
     echo "" >&2
-    echo "❌ API key validation failed: Invalid or expired key" >&2
-    echo "" >&2
-    echo "Your API key is not valid. This can happen if:" >&2
-    echo "  • The key was deleted or revoked" >&2
-    echo "  • The key expired" >&2
-    echo "  • You're using an old key from a different setup" >&2
+    echo "API key validation failed: Invalid or expired key" >&2
     echo "" >&2
 
-    # Prompt user to log in
     read -p "Would you like to log in now to get a valid key? (y/n): " -n 1 -r >&2
     echo "" >&2
 
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "" >&2
-        echo "Starting login process..." >&2
-        echo "" >&2
-
-        # Get email
         read -p "Email: " email >&2
         if [ -z "$email" ]; then
             echo "Error: Email required" >&2
             exit 1
         fi
 
-        # Get password (hidden)
         read -sp "Password: " password >&2
         echo "" >&2
 
-        # Authenticate and get/create API key
-        retrieved_key=$(login_and_get_key "$email" "$password")
+        retrieved_key=$(login_and_get_key "$email" "$password" "$CLAUDE_LOCAL_URL")
 
         if [ $? -eq 0 ] && [ -n "$retrieved_key" ]; then
-            LLAMA_API_KEY="$retrieved_key"
+            CLAUDE_LOCAL_API_KEY="$retrieved_key"
             save_config
             echo "" >&2
-            echo "✓ API key configured successfully!" >&2
-            echo "  Continuing with Claude Code..." >&2
+            echo "API key configured! Continuing..." >&2
             echo "" >&2
         else
-            echo "" >&2
-            echo "Failed to retrieve API key." >&2
-            echo "" >&2
-            echo "You can also set a key manually:" >&2
-            echo "  $0 --set-key <your-key>" >&2
-            echo "" >&2
             exit 1
         fi
     else
-        echo "" >&2
-        echo "Alternatively, you can:" >&2
-        echo "  $0 --login          # Run login separately" >&2
-        echo "  $0 --set-key <key>  # Set a key manually" >&2
-        echo "  $0 --config         # Show current configuration" >&2
-        echo "" >&2
         exit 1
     fi
 elif [ "$http_code" != "200" ]; then
     echo "" >&2
-    echo "⚠️  Warning: Could not validate API key (HTTP $http_code)" >&2
-    echo "The AI Stack may not be reachable at: ${ANTHROPIC_BASE_URL}" >&2
+    echo "Warning: Could not validate API key (HTTP $http_code)" >&2
+    echo "The AI Stack may not be reachable at: ${CLAUDE_LOCAL_URL}" >&2
     echo "" >&2
-    echo "Continuing anyway... (use Ctrl+C to cancel)" >&2
+    echo "Continuing anyway..." >&2
     sleep 2
 else
-    echo "✓ API key valid" >&2
+    echo "API key valid" >&2
 fi
 
-export ANTHROPIC_API_KEY="$LLAMA_API_KEY"
+export ANTHROPIC_API_KEY="$CLAUDE_LOCAL_API_KEY"
+export ANTHROPIC_BASE_URL="$CLAUDE_LOCAL_URL"
 
 # Disable non-essential traffic
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
@@ -476,26 +399,47 @@ done
 # If no model provided, fetch available ones and prompt
 if [ "$has_model" = false ]; then
     echo "Fetching available models from local stack..."
-    models_raw=$(curl -s --connect-timeout 2 --max-time 10 -H "Authorization: Bearer $LLAMA_API_KEY" "${ANTHROPIC_BASE_URL}/v1/models" | python3 -c "import sys, json; data=json.load(sys.stdin); print('\n'.join([m['id'] for m in data.get('data', [])]))" 2>/dev/null)
+    # Use public chat-models endpoint (no auth needed)
+    models_raw=$(curl -s --connect-timeout 2 --max-time 10 \
+        "${CLAUDE_LOCAL_URL}/model/chat-models" 2>/dev/null)
 
-    if [ -z "$models_raw" ]; then
-        echo "Error: Could not connect to AI Stack at ${ANTHROPIC_BASE_URL}."
+    model_data=$(json_get_py "$models_raw" \
+        '.[] | "\(.id)\t\(.alias // .id)\t\(if .is_local then "Ellie" else "Sparky" end)"' \
+        "
+for m in (data if isinstance(data, list) else []):
+    alias = m.get('alias') or m.get('id','?')
+    host = 'Ellie' if m.get('is_local') else 'Sparky'
+    print(f\"{m.get('id','')}\t{alias}\t{host}\")")
+
+    if [ -z "$model_data" ]; then
+        echo "Error: Could not connect to AI Stack at ${CLAUDE_LOCAL_URL}."
         exit 1
     fi
 
-    mapfile -t model_options <<< "$models_raw"
+    mapfile -t model_lines <<< "$model_data"
 
-    # If only one model available, auto-select it
-    if [ ${#model_options[@]} -eq 1 ]; then
-        model_choice="${model_options[0]}"
-        echo "Using model: $model_choice"
-        set -- "$@" "--model" "$model_choice"
+    if [ ${#model_lines[@]} -eq 1 ]; then
+        model_id=$(echo "${model_lines[0]}" | cut -f1)
+        model_label=$(echo "${model_lines[0]}" | cut -f2)
+        model_host=$(echo "${model_lines[0]}" | cut -f3)
+        echo "Using model: $model_label ($model_host)"
+        set -- "$@" "--model" "$model_id"
     else
-        # Multiple models, let user choose
         echo "Select a model to use:"
-        select model_choice in "${model_options[@]}"; do
+        display_labels=()
+        model_ids=()
+        for line in "${model_lines[@]}"; do
+            mid=$(echo "$line" | cut -f1)
+            mlabel=$(echo "$line" | cut -f2)
+            mhost=$(echo "$line" | cut -f3)
+            display_labels+=("$mlabel ($mhost)")
+            model_ids+=("$mid")
+        done
+        select model_choice in "${display_labels[@]}"; do
             if [ -n "$model_choice" ]; then
-                set -- "$@" "--model" "$model_choice"
+                idx=$((REPLY - 1))
+                set -- "$@" "--model" "${model_ids[$idx]}"
+                echo "Using model: $model_choice"
                 break
             fi
         done

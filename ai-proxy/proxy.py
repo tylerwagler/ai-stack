@@ -11,11 +11,19 @@ from datetime import datetime, timedelta
 import threading
 
 from model_registry import ModelRegistry
-from model_manager import ModelManager
+from service_poller import ServicePoller
 
 # Configuration from environment
 PORT = int(os.environ.get("PROXY_PORT", "8081"))
-LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY", "")
+ELLIE_MANAGER_HOST = os.environ.get("ELLIE_MANAGER_HOST", "172.17.0.1:8100")
+SPARKY_MANAGER_HOST = os.environ.get("SPARKY_MANAGER_HOST", "10.20.10.10:8100")
+SUPABASE_INTERNAL_URL = os.environ.get("SUPABASE_INTERNAL_URL", "http://ai-supabase-kong:8000")
+
+# Map host keys to manager addresses
+MANAGER_HOSTS = {
+    "ellie": ELLIE_MANAGER_HOST,
+    "sparky": SPARKY_MANAGER_HOST,
+}
 
 # DB Config
 DB_NAME = os.environ.get("POSTGRES_DB", "postgres")
@@ -33,7 +41,11 @@ CACHE_TTL = 30
 
 # Model Management
 model_registry = ModelRegistry()
-model_manager = ModelManager(model_registry)
+model_registry.load_models()
+
+# Service Poller (background thread polling all LLM backends)
+service_poller = ServicePoller(model_registry)
+service_poller.start()
 
 def get_db_conn():
     try:
@@ -56,10 +68,6 @@ def release_db_conn(conn):
             pass
 
 def fetch_api_key_data(api_key):
-    # System key check
-    if api_key == LLAMA_API_KEY:
-        return {"system_key": True}
-
     now = time.time()
     if api_key in KEY_CACHE:
         entry_time, data = KEY_CACHE[api_key]
@@ -207,6 +215,281 @@ def record_usage(api_key_id, user_id, model, prompt_tokens, completion_tokens, p
     finally:
         if conn: release_db_conn(conn)
 
+def validate_jwt_via_gotrue(token):
+    """Validate a JWT by calling GoTrue's /auth/v1/user endpoint.
+    Returns user dict {id, email, ...} on success, None on failure."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_INTERNAL_URL}/auth/v1/user",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        return None
+    except Exception as e:
+        print(f"GOTRUE_VALIDATE_ERROR: {e}", file=sys.stderr)
+        return None
+
+
+def handle_auth_login(handler):
+    """POST /v1/auth/login — authenticate via email/password, return token + API keys."""
+    content_length = int(handler.headers.get('Content-Length', 0))
+    body = handler.rfile.read(content_length) if content_length > 0 else b'{}'
+    try:
+        data = json.loads(body)
+    except Exception:
+        handler.send_error_json(400, "Invalid JSON body")
+        return
+
+    email = data.get("email")
+    password = data.get("password")
+    if not email or not password:
+        handler.send_error_json(400, "email and password required")
+        return
+
+    # Forward to GoTrue password grant
+    try:
+        auth_resp = requests.post(
+            f"{SUPABASE_INTERNAL_URL}/auth/v1/token?grant_type=password",
+            json={"email": email, "password": password},
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"AUTH_LOGIN_GOTRUE_ERROR: {e}", file=sys.stderr)
+        handler.send_error_json(503, "Authentication service unreachable")
+        return
+
+    if auth_resp.status_code != 200:
+        # Forward GoTrue error
+        handler.send_response(auth_resp.status_code)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Access-Control-Allow-Origin', '*')
+        handler.end_headers()
+        handler.wfile.write(auth_resp.content)
+        return
+
+    auth_data = auth_resp.json()
+    access_token = auth_data.get("access_token", "")
+    user = auth_data.get("user", {})
+    user_id = user.get("id", "")
+
+    # Fetch user's existing API keys
+    api_keys = []
+    if user_id:
+        conn = get_db_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT id, api_key, name, created_at FROM public.api_keys WHERE user_id = %s ORDER BY created_at DESC",
+                    (user_id,),
+                )
+                for row in cur.fetchall():
+                    api_keys.append({
+                        "id": str(row[0]),
+                        "api_key": row[1],
+                        "name": row[2],
+                        "created_at": row[3].isoformat() if row[3] else None,
+                    })
+                cur.close()
+            except Exception as e:
+                print(f"AUTH_LOGIN_KEYS_ERROR: {e}", file=sys.stderr)
+            finally:
+                release_db_conn(conn)
+
+    result = {
+        "access_token": access_token,
+        "user": {"id": user_id, "email": user.get("email", "")},
+        "api_keys": api_keys,
+    }
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.end_headers()
+    handler.wfile.write(json.dumps(result).encode())
+
+
+def handle_auth_keys_get(handler):
+    """GET /v1/auth/keys — list API keys for authenticated user."""
+    token = _extract_bearer_token(handler)
+    if not token:
+        handler.send_error_json(401, "Authorization: Bearer <token> required")
+        return
+
+    user = validate_jwt_via_gotrue(token)
+    if not user:
+        handler.send_error_json(401, "Invalid or expired token")
+        return
+
+    user_id = user.get("id", "")
+    api_keys = []
+    conn = get_db_conn()
+    if not conn:
+        handler.send_error_json(503, "Database unavailable")
+        return
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, api_key, name, created_at FROM public.api_keys WHERE user_id = %s ORDER BY created_at DESC",
+            (user_id,),
+        )
+        for row in cur.fetchall():
+            api_keys.append({
+                "id": str(row[0]),
+                "api_key": row[1],
+                "name": row[2],
+                "created_at": row[3].isoformat() if row[3] else None,
+            })
+        cur.close()
+    except Exception as e:
+        print(f"AUTH_KEYS_GET_ERROR: {e}", file=sys.stderr)
+        handler.send_error_json(500, "Failed to fetch keys")
+        return
+    finally:
+        release_db_conn(conn)
+
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.end_headers()
+    handler.wfile.write(json.dumps({"keys": api_keys}).encode())
+
+
+def handle_auth_keys_post(handler):
+    """POST /v1/auth/keys — create a new API key for authenticated user."""
+    token = _extract_bearer_token(handler)
+    if not token:
+        handler.send_error_json(401, "Authorization: Bearer <token> required")
+        return
+
+    user = validate_jwt_via_gotrue(token)
+    if not user:
+        handler.send_error_json(401, "Invalid or expired token")
+        return
+
+    user_id = user.get("id", "")
+
+    content_length = int(handler.headers.get('Content-Length', 0))
+    body = handler.rfile.read(content_length) if content_length > 0 else b'{}'
+    try:
+        data = json.loads(body)
+    except Exception:
+        data = {}
+
+    timestamp = int(time.time())
+    name = data.get("name", f"claude-local-{timestamp}")
+    api_key = f"sk_ai_{os.urandom(24).hex()}"
+
+    conn = get_db_conn()
+    if not conn:
+        handler.send_error_json(503, "Database unavailable")
+        return
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO public.api_keys (user_id, api_key, name) VALUES (%s, %s, %s) RETURNING id, created_at",
+            (user_id, api_key, name),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+
+        result = {
+            "id": str(row[0]),
+            "api_key": api_key,
+            "name": name,
+            "created_at": row[1].isoformat() if row[1] else None,
+        }
+        handler.send_response(201)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Access-Control-Allow-Origin', '*')
+        handler.end_headers()
+        handler.wfile.write(json.dumps(result).encode())
+    except Exception as e:
+        print(f"AUTH_KEYS_POST_ERROR: {e}", file=sys.stderr)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        handler.send_error_json(500, f"Failed to create key: {e}")
+    finally:
+        release_db_conn(conn)
+
+
+def _extract_bearer_token(handler):
+    """Extract Bearer token from Authorization header."""
+    auth = handler.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return None
+
+
+def extract_usage(response_bytes, is_streaming):
+    """Extract token usage from response body.
+    Handles OpenAI format (prompt_tokens/completion_tokens) and
+    Anthropic format (input_tokens/output_tokens), both streaming and non-streaming.
+    Returns (prompt_tokens, completion_tokens).
+    """
+    if not response_bytes:
+        return (0, 0)
+
+    if not is_streaming:
+        try:
+            data = json.loads(response_bytes)
+            usage = data.get('usage', {})
+            if not usage:
+                return (0, 0)
+            # OpenAI: prompt_tokens/completion_tokens
+            # Anthropic: input_tokens/output_tokens
+            prompt = usage.get('prompt_tokens') or usage.get('input_tokens') or 0
+            completion = usage.get('completion_tokens') or usage.get('output_tokens') or 0
+            return (prompt, completion)
+        except Exception:
+            return (0, 0)
+
+    # Streaming: parse SSE data lines
+    prompt_tokens = 0
+    completion_tokens = 0
+    text = response_bytes.decode('utf-8', errors='replace')
+
+    for line in text.split('\n'):
+        if not line.startswith('data: '):
+            continue
+        data_str = line[6:].strip()
+        if not data_str or data_str == '[DONE]':
+            continue
+        try:
+            event = json.loads(data_str)
+
+            # OpenAI streaming: usage object in final chunk
+            usage = event.get('usage')
+            if usage and isinstance(usage, dict):
+                if 'prompt_tokens' in usage:
+                    prompt_tokens = usage['prompt_tokens']
+                if 'completion_tokens' in usage:
+                    completion_tokens = usage['completion_tokens']
+
+            # Anthropic streaming: message_start has input_tokens
+            if event.get('type') == 'message_start':
+                msg_usage = event.get('message', {}).get('usage', {})
+                if 'input_tokens' in msg_usage:
+                    prompt_tokens = msg_usage['input_tokens']
+
+            # Anthropic streaming: message_delta has output_tokens
+            if event.get('type') == 'message_delta':
+                delta_usage = event.get('usage', {})
+                if 'output_tokens' in delta_usage:
+                    completion_tokens = delta_usage['output_tokens']
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    return (prompt_tokens, completion_tokens)
+
+
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
@@ -218,7 +501,16 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
             print("DEBUG: Inside TRY", file=sys.stderr)
             sys.stderr.flush()
             self.headers_sent = False
-            
+
+            # --- SERVICE STATUS ENDPOINT ---
+            if self.path == '/service/status':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"backends": service_poller.get_all()}).encode())
+                return
+
             # --- SYSTEM ENDPOINTS ---
             print(f"DEBUG: Checking System {self.path}", file=sys.stderr)
             sys.stderr.flush()
@@ -232,316 +524,398 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
             if self.path.startswith('/model'):
                 print(f"DEBUG: Entering Model Block {self.path}", file=sys.stderr)
 
-                # 1. API Key Check for System Endpoints
-                api_key = None
-                if 'x-api-key' in self.headers:
-                    api_key = self.headers['x-api-key']
-                elif 'Authorization' in self.headers:
-                    auth_header = self.headers['Authorization']
-                    if auth_header.startswith('Bearer '):
-                        api_key = auth_header[7:]
-                
-                # Check query param for key (sometimes used in simple GETs)
-                if not api_key and '?' in self.path:
-                    from urllib.parse import parse_qs, urlparse
-                    query = parse_qs(urlparse(self.path).query)
-                    if 'key' in query:
-                         api_key = query['key'][0]
-
-                # Check env for METRICS_API_KEY override
-                METRICS_KEY = os.environ.get("METRICS_API_KEY", LLAMA_API_KEY)
-                
-                if api_key != LLAMA_API_KEY and api_key != METRICS_KEY:
-                     # Check if it's a valid user key with admin?
-                     # Fetch key data
-                     key_data = fetch_api_key_data(api_key) if api_key else None
-                     if not key_data or not key_data.get('system_key'):
-                         self.send_error_json(401, "Unauthorized: System Access Required")
-                         return
-
-                if self.path == '/system/status' or self.path == '/metrics':
+                # Read-only model list is public (no auth required)
+                if self.path == '/model/list' or self.path == '/model/available':
+                    print(f"Handling {self.path} (public)", file=sys.stderr)
                     try:
-                        model_state = model_manager.get_status()
+                        models = []
+                        for m in model_registry.list_models():
+                            models.append({
+                                "id": m.id,
+                                "name": m.name,
+                                "backend": m.backend,
+                                "path": m.path,
+                                "host": m.host,
+                                "is_local": m.is_local,
+                                "ctx_size": int(m.parameters.get('ctx-size', 0)),
+                                "max_ctx": int(m.parameters.get('max-ctx', 0)),
+                                "parallel": int(m.parameters.get('parallel', 1)),
+                                "cache_type": m.parameters.get('cache-type', 'f16'),
+                                "vram_base": int(m.parameters.get('vram-base', 0)),
+                                "vram_per_1k_ctx": int(m.parameters.get('vram-per-1k-ctx', 0)),
+                            })
+
+                        all_backends = service_poller.get_all()
+
+                        # Build a set of model config IDs that are actually loaded
+                        # by matching ServicePoller data against registry configs
+                        loaded_model_ids = set()
+                        norm = lambda s: s.lower().replace('-', '').replace('_', '').replace('.', '').replace(' ', '')
+                        for b in all_backends:
+                            if b.get('status') != 'ready':
+                                continue
+                            loaded = b.get('model', '')
+                            model_path = b.get('model_path', '')
+                            host = b.get('host', '')
+                            config = None
+                            if loaded:
+                                config = model_registry.find_model(loaded)
+                            if not config and model_path:
+                                config = model_registry.find_model(model_path)
+                            if not config and loaded:
+                                loaded_norm = norm(loaded)
+                                for mc in model_registry.list_models():
+                                    if mc.host != host:
+                                        continue
+                                    if loaded_norm in norm(mc.path) or loaded_norm in norm(mc.name):
+                                        config = mc
+                                        break
+                            if config:
+                                loaded_model_ids.add(config.id)
+
+                        compat_models = []
+                        for m_dict in models:
+                            is_loaded = m_dict["id"] in loaded_model_ids
+                            entry = {
+                                "name": m_dict["id"],
+                                "alias": m_dict["name"],
+                                "backend": m_dict["backend"],
+                                "host": m_dict["host"],
+                                "is_local": m_dict["is_local"],
+                                "status": "ready" if is_loaded else "offline",
+                                "ctx_size": m_dict.get("ctx_size", 0),
+                                "max_ctx": m_dict.get("max_ctx", 0),
+                                "parallel": m_dict.get("parallel", 1),
+                                "cache_type": m_dict.get("cache_type", "f16"),
+                                "vram_base": m_dict.get("vram_base", 0),
+                                "vram_per_1k_ctx": m_dict.get("vram_per_1k_ctx", 0),
+                            }
+                            compat_models.append(entry)
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
                         self.send_header('Access-Control-Allow-Origin', '*')
                         self.end_headers()
-                        self.wfile.write(json.dumps(model_state).encode())
+                        self.wfile.write(json.dumps(compat_models).encode())
                     except Exception as e:
-                        self.send_error_json(500, f"System Status Error: {str(e)}")
+                        print(f"Error listing models: {e}", file=sys.stderr)
+                        self.send_error_json(500, str(e))
                     return
 
-                # --- MODEL MANAGEMENT ENDPOINTS ---
-                if self.path.startswith('/model'):
-                    print(f"DEBUG: Entering Model Block {self.path}", file=sys.stderr)
-                    # Auth Check (Same as System)
-                    api_key = None
-                    if 'x-api-key' in self.headers:
-                        api_key = self.headers['x-api-key']
-                    elif 'Authorization' in self.headers:
-                        auth_header = self.headers['Authorization']
-                        if auth_header.startswith('Bearer '):
-                            api_key = auth_header[7:]
+                # Ready-to-chat models: only models on backends that are actually online
+                if self.path == '/model/chat-models':
+                    ready = []
+                    for b in service_poller.get_all():
+                        if b.get('status') != 'ready':
+                            continue
+                        loaded = b.get('model', '')
+                        model_path = b.get('model_path', '')
+                        host = b.get('host', '')
 
-                    # Allow query param for key
-                    if not api_key and '?' in self.path:
-                        from urllib.parse import parse_qs, urlparse
-                        query = parse_qs(urlparse(self.path).query)
-                        if 'key' in query:
-                             api_key = query['key'][0]
-                    
-                    METRICS_KEY = os.environ.get("METRICS_API_KEY", LLAMA_API_KEY)
-                    print(f"DEBUG: Auth Check. Path={self.path} API_KEY_Present={bool(api_key)}", file=sys.stderr)
-                    
-                    valid_auth = False
-                    if api_key == LLAMA_API_KEY or api_key == METRICS_KEY:
-                        valid_auth = True
-                        print("DEBUG: Auth Success (System/Metrics Key)", file=sys.stderr)
-                    else:
-                         key_data = fetch_api_key_data(api_key) if api_key else None
-                         if key_data and key_data.get('system_key'):
-                             valid_auth = True
-                             print("DEBUG: Auth Success (DB System Key)", file=sys.stderr)
-                         else:
-                             print(f"DEBUG: Reuse DB Key Failed. KeyData={key_data}", file=sys.stderr)
-                    
-                    print(f"DEBUG: Auth Result: {valid_auth}", file=sys.stderr)
-                    
-                    if not valid_auth:
-                         print("DEBUG: Auth Failed", file=sys.stderr)
-                         self.send_error_json(401, "Unauthorized: Admin Access Required")
-                         return
+                        # Try to match backend's loaded model to a models.ini entry
+                        config = None
+                        if loaded:
+                            config = model_registry.find_model(loaded)
+                        if not config and model_path:
+                            config = model_registry.find_model(model_path)
+                        # Fallback: match by host with flexible name comparison
+                        if not config and loaded:
+                            norm = lambda s: s.lower().replace('-', '').replace('_', '').replace('/', '').replace('.', '').replace(' ', '').replace(':', '')
+                            loaded_norm = norm(loaded)
+                            for m in model_registry.list_models():
+                                if m.host != host:
+                                    continue
+                                if loaded_norm in norm(m.path) or loaded_norm in norm(m.name):
+                                    config = m
+                                    break
 
-                    if self.path == '/model/status':
-                        state = model_manager.get_status()
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'application/json')
-                        self.send_header('Access-Control-Allow-Origin', '*')
-                        self.end_headers()
-                        self.wfile.write(json.dumps(state).encode())
-                        return
+                        if config:
+                            # Skip models marked as hidden from chat clients
+                            if config.parameters.get('chat-visible', 'true').lower() == 'false':
+                                continue
+                            ready.append({
+                                "id": config.id,
+                                "alias": config.name,
+                                "backend": b['backend'],
+                                "host": config.host,
+                                "is_local": config.is_local,
+                            })
+                        else:
+                            ready.append({
+                                "id": loaded,
+                                "alias": loaded,
+                                "backend": b.get('backend', 'unknown'),
+                                "host": host,
+                                "is_local": b.get('is_local', False),
+                            })
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(json.dumps(ready).encode())
+                    return
 
-                    if self.path == '/model/list' or self.path == '/model/available':
-                        print(f"Handling {self.path}", file=sys.stderr)
-                        try:
-                            models = model_manager.list_models()
-                            print(f"Models listed: {len(models)}", file=sys.stderr)
-                            # Compat for frontend calling /model/available
-                            # It expects: name, alias, status
-                            compat_models = []
-                            for m in models:
-                                compat_models.append({
-                                    "name": m["id"],
-                                    "alias": m["name"],
-                                    "backend": m["backend"],
-                                    "host": m["host"],
-                                    "is_local": m["is_local"],
-                                    "status": "active" if m["is_active"] else "ready"
-                                })
-                            
-                            print("Sending response...", file=sys.stderr)
-                            self.send_response(200)
+                self.send_error_json(404, "Unknown Model Endpoint")
+                return
+
+            # --- MODEL MANAGER PROXY ENDPOINTS (admin, proxied to model-managers) ---
+            # Routes: /ellie/* -> Ellie model-manager, /sparky/* -> Sparky model-manager
+            for host_key, manager_addr in MANAGER_HOSTS.items():
+                prefix = f'/{host_key}/'
+                if self.path.startswith(prefix):
+                    manager_path = self.path.replace(prefix, '/models/', 1)
+                    manager_url = f"http://{manager_addr}{manager_path}"
+
+                    # Read request body for POST
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length) if content_length > 0 else None
+
+                    try:
+                        fwd_headers = {"Content-Type": "application/json"}
+                        with requests.request(
+                            method=self.command,
+                            url=manager_url,
+                            data=body,
+                            headers=fwd_headers,
+                            timeout=30,
+                        ) as r:
+                            self.send_response(r.status_code)
                             self.send_header('Content-Type', 'application/json')
                             self.send_header('Access-Control-Allow-Origin', '*')
                             self.end_headers()
-                            self.wfile.write(json.dumps(compat_models).encode())
-                            print("Response sent.", file=sys.stderr)
-                        except Exception as e:
-                            print(f"Error in model list: {e}", file=sys.stderr)
-                            raise e
-                        return
-
-                    if self.path == '/model/switch':
-                        content_length = int(self.headers.get('Content-Length', 0))
-                        body = self.rfile.read(content_length)
-                        try:
-                            data = json.loads(body)
-                            target_model = data.get('model')
-                            if not target_model:
-                                 self.send_error_json(400, "Missing model name/id")
-                                 return
-                            
-                            success = model_manager.switch_model(target_model)
-                            
-                            if success:
-                                self.send_response(200)
-                                self.send_header('Content-Type', 'application/json')
-                                self.send_header('Access-Control-Allow-Origin', '*')
-                                self.end_headers()
-                                self.wfile.write(json.dumps({"status": "switching_initiated"}).encode())
-                            else:
-                                self.send_error_json(500, f"Failed to switch to {target_model}: {model_manager.last_error}")
-                                
-                        except Exception as e:
-                            print(f"Switch error: {e}", file=sys.stderr)
-                            self.send_error_json(500, str(e))
-                        return
-                    
-                    # Legacy support /model/current
-                    if self.path == '/model/current':
-                        state = model_manager.get_status()
-                        current = state.get("current_model")
-                        data = {
-                            "name": current.get("id") if current else "none",
-                            "alias": current.get("name") if current else "none",
-                            "status": state.get("status"),
-                            "backend": current.get("backend") if current else "none"
-                        }
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'application/json')
-                        self.send_header('Access-Control-Allow-Origin', '*')
-                        self.end_headers()
-                        self.wfile.write(json.dumps(data).encode())
-                        return
-
-                    self.send_error_json(404, "Unknown Model Endpoint")
-                    return
-
-                # --- API REQUESTS ---
-
-                # 1. API KEY VALIDATION
-                api_key = None
-                if 'x-api-key' in self.headers:
-                    api_key = self.headers['x-api-key']
-                elif 'Authorization' in self.headers:
-                    auth_header = self.headers['Authorization']
-                    if auth_header.startswith('Bearer '):
-                        api_key = auth_header[7:]
-        
-                if not api_key:
-                    self.send_error_json(401, "Unauthorized: No API Key provided")
-                    return
-        
-                key_data = fetch_api_key_data(api_key)
-                if not key_data:
-                    self.send_error_json(401, "Unauthorized: Invalid API Key")
-                    return
-
-                # Log which key is being used
-                key_name = key_data.get('key_name', 'system') if not key_data.get('system_key') else 'SYSTEM_KEY'
-                
-                # 2. LIMIT CHECKING (Skip for system key)
-                if not key_data.get("system_key"):
-                    # ... (same limit check logic) ...
-                    pass
-        
-                # Read request body
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length) if content_length > 0 else None
-                
-                # Routing Logic — resolve model from request body
-                is_streaming = False
-                model_config = None
-
-                if body and self.headers.get('Content-Type') == 'application/json':
-                    try:
-                        data = json.loads(body)
-                        requested_model = data.get('model', '')
-                        is_streaming = data.get('stream', False)
-
-                        # Look up model in registry by id, alias, or HF path
-                        if requested_model:
-                            model_config = model_registry.find_model(requested_model)
-
-                        # Fall back to the currently-loaded local model
-                        if not model_config:
-                            state = model_manager.get_status()
-                            cid = state.get('current_model_id')
-                            if cid:
-                                model_config = model_registry.get_model(cid)
-
-                        if not model_config:
-                            self.send_error_json(503, "No model found for request")
-                            return
-
-                        # Rewrite model field to the full HF path (vLLM requirement)
-                        if model_config.backend == 'vllm':
-                            data['model'] = model_config.path
-
-                        body = json.dumps(data).encode('utf-8')
-
+                            self.wfile.write(r.content)
                     except Exception as e:
-                        print(f"Proxy Error parsing JSON: {e}", file=sys.stderr)
-
-                # For non-JSON requests (e.g. GET /v1/models), fall back to current model
-                if not model_config:
-                    state = model_manager.get_status()
-                    cid = state.get('current_model_id')
-                    if cid:
-                        model_config = model_registry.get_model(cid)
-
-                if not model_config:
-                    self.send_error_json(503, "No model loaded")
+                        print(f"Manager proxy error ({host_key}): {e}", file=sys.stderr)
+                        self.send_error_json(502, f"{host_key} model-manager unreachable: {e}")
                     return
 
-                # Build target URL from per-model host
-                backend_url = model_config.base_url
+            # --- AUTH ENDPOINTS (no API key required) ---
+            if self.path == '/v1/auth/login' and self.command == 'POST':
+                handle_auth_login(self)
+                return
+            if self.path == '/v1/auth/keys':
+                if self.command == 'GET':
+                    handle_auth_keys_get(self)
+                    return
+                elif self.command == 'POST':
+                    handle_auth_keys_post(self)
+                    return
+                else:
+                    self.send_error_json(405, "Method not allowed")
+                    return
 
-                # Strip /v1 prefix from path since base_url already includes it
-                forward_path = self.path
-                if self.path.startswith('/v1'):
-                    forward_path = self.path[3:]  # remove '/v1'
+            # --- API REQUESTS ---
 
-                url = f"{backend_url}{forward_path}"
+            # 1. API KEY VALIDATION
+            api_key = None
+            if 'x-api-key' in self.headers:
+                api_key = self.headers['x-api-key']
+            elif 'Authorization' in self.headers:
+                auth_header = self.headers['Authorization']
+                if auth_header.startswith('Bearer '):
+                    api_key = auth_header[7:]
 
-                print(f"Proxy Forwarding: {self.command} {self.path} -> {url}", file=sys.stderr)
-                headers = {k: v for k, v in self.headers.items() if k.lower() not in ('host', 'content-length', 'authorization', 'x-api-key')}
-                headers['Authorization'] = f"Bearer {LLAMA_API_KEY}"
-                
+            if not api_key:
+                self.send_error_json(401, "Unauthorized: No API Key provided")
+                return
+
+            key_data = fetch_api_key_data(api_key)
+            if not key_data:
+                self.send_error_json(401, "Unauthorized: Invalid API Key")
+                return
+
+            # Log which key is being used
+            key_name = key_data.get('key_name', 'system') if not key_data.get('system_key') else 'SYSTEM_KEY'
+
+            # 2. LIMIT CHECKING (Skip for system key)
+            if not key_data.get("system_key"):
+                # ... (same limit check logic) ...
+                pass
+
+            # Read request body
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length) if content_length > 0 else None
+
+            # Routing Logic — resolve model from request body
+            is_streaming = False
+            model_config = None
+
+            if body and 'application/json' in (self.headers.get('Content-Type') or ''):
                 try:
-                    # Add retry logic for backend wake-up
-                    max_retries = 10
-                    for i in range(max_retries):
-                        try:
-                            with requests.request(
-                                method=self.command,
-                                url=url,
-                                data=body,
-                                headers=headers,
-                                stream=True,
-                                timeout=300
-                            ) as r:
-                                # Verify success connection
-                                self.send_response(r.status_code)
-                                excluded = ('transfer-encoding', 'content-length', 'connection', 'content-encoding')
-                                for k, v in r.headers.items():
-                                    if k.lower() not in excluded:
-                                        self.send_header(k, v)
-                                
-                                self.send_header('Connection', 'close')
-                                self.end_headers()
-                                self.headers_sent = True
-                                
-                                # Stream processing ...
-                                # (Basic pass-through for now to save space, but keeping usage tracking logic if possible)
-                                
-                                prompt_tokens = 0
-                                completion_tokens = 0
-                                
-                                if is_streaming:
-                                    for chunk in r.iter_content(chunk_size=None):
-                                        if not chunk: continue
-                                        self.wfile.write(chunk)
-                                        self.wfile.flush()
-                                        # Usage extraction logic would go here
-                                else:
-                                    self.wfile.write(r.content)
-                                    self.wfile.flush()
-                                    # Usage logic here
-                                
-                                # if not key_data.get("system_key"): ... record usage ...
-                                break # Success
-                        except requests.exceptions.ConnectionError:
-                            if i < max_retries - 1:
-                                time.sleep(1) # Wait for container to wake up
-                            else:
-                                raise
+                    data = json.loads(body)
+                    requested_model = data.get('model', '')
+                    is_streaming = data.get('stream', False)
+                    print(f"DEBUG: Requested model: {requested_model!r}", file=sys.stderr)
+                    # Log sampling params for debugging
+                    sampling_keys = ('max_tokens', 'temperature', 'top_p', 'top_k', 'min_p',
+                                     'repetition_penalty', 'frequency_penalty', 'presence_penalty')
+                    sampling = {k: data[k] for k in sampling_keys if k in data}
+                    if sampling:
+                        print(f"DEBUG: Sampling params: {sampling}", file=sys.stderr)
+                    else:
+                        print(f"DEBUG: No sampling params in request", file=sys.stderr)
+
+                    # Look up model in registry by id, alias, or HF path
+                    if requested_model:
+                        model_config = model_registry.find_model(requested_model)
+                        print(f"DEBUG: find_model result: {model_config.id if model_config else None} host={model_config.host if model_config else None}", file=sys.stderr)
+
+                    # Fall back to first ready backend
+                    if not model_config:
+                        for b in service_poller.get_all():
+                            if b.get('status') == 'ready':
+                                loaded = b.get('model', '')
+                                if loaded:
+                                    model_config = model_registry.find_model(loaded)
+                                    if model_config:
+                                        break
+
+                    if not model_config:
+                        self.send_error_json(503, "No model found for request")
+                        return
+
+                    # Rewrite model field for vLLM to the name the backend actually reports
+                    if model_config.backend == 'vllm':
+                        served_name = model_config.path  # fallback to HF path
+                        for b in service_poller.get_all():
+                            if b.get('host') == model_config.host and b.get('status') == 'ready':
+                                served_name = b.get('model', served_name)
+                                break
+                        data['model'] = served_name
+
+                    # Inject per-model sampling defaults (only if client didn't set them)
+                    SAMPLING_DEFAULTS = {
+                        'temperature': 'default-temperature',
+                        'top_p': 'default-top-p',
+                        'top_k': 'default-top-k',
+                        'min_p': 'default-min-p',
+                    }
+                    injected = {}
+                    for param_key, ini_key in SAMPLING_DEFAULTS.items():
+                        if param_key not in data and ini_key in model_config.parameters:
+                            val = model_config.parameters[ini_key]
+                            data[param_key] = float(val) if '.' in val else int(val)
+                            injected[param_key] = data[param_key]
+
+                    # Cap max_tokens to per-model max-output
+                    max_output = model_config.parameters.get('max-output')
+                    if max_output:
+                        max_out = int(max_output)
+                        req_max = data.get('max_tokens')
+                        if req_max is None or req_max > max_out:
+                            data['max_tokens'] = max_out
+                            injected['max_tokens'] = f"{req_max} -> {max_out}"
+
+                    if injected:
+                        print(f"DEBUG: Injected defaults for {model_config.id}: {injected}", file=sys.stderr)
+
+                    # Ensure OpenAI streaming responses include usage data for tracking.
+                    # Anthropic streaming already includes usage in message_start/message_delta.
+                    is_openai_endpoint = '/chat/completions' in self.path or '/completions' in self.path
+                    if is_streaming and is_openai_endpoint and 'stream_options' not in data:
+                        data['stream_options'] = {"include_usage": True}
+
+                    body = json.dumps(data).encode('utf-8')
 
                 except Exception as e:
-                    print(f"Proxy forwarding error: {e}", file=sys.stderr)
-                    if not self.headers_sent:
-                        self.send_error_json(502, f"Proxy Error: {str(e)}")
-                        
+                    print(f"Proxy Error parsing JSON: {e}", file=sys.stderr)
+
+            # For non-JSON requests (e.g. GET /v1/models), fall back to first ready backend
+            if not model_config:
+                for b in service_poller.get_all():
+                    if b.get('status') == 'ready':
+                        loaded = b.get('model', '')
+                        if loaded:
+                            model_config = model_registry.find_model(loaded)
+                            if model_config:
+                                break
+
+            if not model_config:
+                self.send_error_json(503, "No model loaded")
+                return
+
+            # Build target URL from per-model host
+            backend_url = model_config.base_url
+
+            # Strip /v1 prefix from path since base_url already includes it
+            forward_path = self.path
+            if self.path.startswith('/v1'):
+                forward_path = self.path[3:]  # remove '/v1'
+
+            url = f"{backend_url}{forward_path}"
+
+            print(f"Proxy Forwarding: {self.command} {self.path} -> {url}", file=sys.stderr)
+            headers = {k: v for k, v in self.headers.items() if k.lower() not in ('host', 'content-length', 'authorization', 'x-api-key')}
+
+            try:
+                # Add retry logic for backend wake-up
+                max_retries = 10
+                for i in range(max_retries):
+                    try:
+                        with requests.request(
+                            method=self.command,
+                            url=url,
+                            data=body,
+                            headers=headers,
+                            stream=True,
+                            timeout=300
+                        ) as r:
+                            # Verify success connection
+                            self.send_response(r.status_code)
+                            excluded = ('transfer-encoding', 'content-length', 'connection', 'content-encoding')
+                            for k, v in r.headers.items():
+                                if k.lower() not in excluded:
+                                    self.send_header(k, v)
+
+                            self.send_header('Connection', 'close')
+                            self.end_headers()
+                            self.headers_sent = True
+
+                            # Stream response and capture bytes for usage extraction
+                            response_status = r.status_code
+                            if is_streaming:
+                                chunks = []
+                                for chunk in r.iter_content(chunk_size=None):
+                                    if not chunk: continue
+                                    self.wfile.write(chunk)
+                                    self.wfile.flush()
+                                    chunks.append(chunk)
+                                response_bytes = b''.join(chunks)
+                            else:
+                                response_bytes = r.content
+                                self.wfile.write(response_bytes)
+                                self.wfile.flush()
+
+                            break # Success
+                    except requests.exceptions.ConnectionError:
+                        if i < max_retries - 1:
+                            time.sleep(1) # Wait for container to wake up
+                        else:
+                            raise
+
+                # Record usage after successful response
+                if response_status < 400 and not key_data.get("system_key"):
+                    try:
+                        prompt_tokens, completion_tokens = extract_usage(response_bytes, is_streaming)
+                        if prompt_tokens > 0 or completion_tokens > 0:
+                            model_name = model_config.id if model_config else "unknown"
+                            record_usage(
+                                key_data["api_key_id"],
+                                key_data["user_id"],
+                                model_name,
+                                prompt_tokens,
+                                completion_tokens,
+                                self.path
+                            )
+                        else:
+                            print(f"USAGE_WARN: No token counts found in response for {self.path}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"USAGE_EXTRACT_ERROR: {e}", file=sys.stderr)
+
+            except Exception as e:
+                print(f"Proxy forwarding error: {e}", file=sys.stderr)
+                if not self.headers_sent:
+                    self.send_error_json(502, f"Proxy Error: {str(e)}")
+
         except Exception as e:
             print(f"CRITICAL HANDLE REQ ERROR: {e}", file=sys.stderr)
             if not self.headers_sent:
@@ -570,6 +944,6 @@ class LlamaProxy(http.server.BaseHTTPRequestHandler):
         self.handle_request()
 
 if __name__ == "__main__":
-    print(f"Llama Proxy (AI Manager) listening on port {PORT}", file=sys.stderr)
+    print(f"AI Proxy listening on port {PORT}", file=sys.stderr)
     sys.stderr.flush()
     ThreadedHTTPServer(('0.0.0.0', PORT), LlamaProxy).serve_forever()

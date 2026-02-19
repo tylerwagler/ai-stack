@@ -58,32 +58,28 @@ log_alert() {
 }
 
 # Check 1: GPU Temperature
-if [ -n "$METRICS_API_KEY" ]; then
-    echo "Checking GPU temperature..."
-    GPU_TEMP=$(curl -s -H "X-API-Key: $METRICS_API_KEY" http://localhost:3001/metrics 2>/dev/null | jq -r '.gpus[0].temperature' 2>/dev/null)
+echo "Checking GPU temperature..."
+GPU_TEMP=$(curl -s http://localhost:3001/metrics 2>/dev/null | jq -r '.gpus[0].temperature' 2>/dev/null)
 
-    if [ -n "$GPU_TEMP" ] && [ "$GPU_TEMP" != "null" ]; then
-        if [ "$GPU_TEMP" -gt 85 ]; then
-            echo -e "${RED}❌ CRITICAL: GPU temperature: ${GPU_TEMP}°C (>85°C threshold)${NC}"
-            log_alert "CRITICAL" "GPU temperature critical: ${GPU_TEMP}°C"
-            CRITICAL_ISSUES=$((CRITICAL_ISSUES + 1))
-        elif [ "$GPU_TEMP" -gt 80 ]; then
-            echo -e "${YELLOW}⚠️  WARNING: GPU temperature: ${GPU_TEMP}°C (>80°C threshold)${NC}"
-            log_alert "WARNING" "GPU temperature high: ${GPU_TEMP}°C"
-            WARNINGS=$((WARNINGS + 1))
-        else
-            echo -e "${GREEN}✅ OK: GPU temperature: ${GPU_TEMP}°C${NC}"
-        fi
-
-        if [ "$VERBOSE" = true ]; then
-            curl -s -H "X-API-Key: $METRICS_API_KEY" http://localhost:3001/metrics 2>/dev/null | jq '.gpus[] | {id, temp: .temperature, util: .utilization, power: .power_watts}'
-        fi
-    else
-        echo -e "${RED}❌ ERROR: Cannot read GPU temperature${NC}"
+if [ -n "$GPU_TEMP" ] && [ "$GPU_TEMP" != "null" ]; then
+    if [ "$GPU_TEMP" -gt 85 ]; then
+        echo -e "${RED}❌ CRITICAL: GPU temperature: ${GPU_TEMP}°C (>85°C threshold)${NC}"
+        log_alert "CRITICAL" "GPU temperature critical: ${GPU_TEMP}°C"
         CRITICAL_ISSUES=$((CRITICAL_ISSUES + 1))
+    elif [ "$GPU_TEMP" -gt 80 ]; then
+        echo -e "${YELLOW}⚠️  WARNING: GPU temperature: ${GPU_TEMP}°C (>80°C threshold)${NC}"
+        log_alert "WARNING" "GPU temperature high: ${GPU_TEMP}°C"
+        WARNINGS=$((WARNINGS + 1))
+    else
+        echo -e "${GREEN}✅ OK: GPU temperature: ${GPU_TEMP}°C${NC}"
+    fi
+
+    if [ "$VERBOSE" = true ]; then
+        curl -s http://localhost:3001/metrics 2>/dev/null | jq '.gpus[] | {id, temp: .temperature, util: .utilization, power: .power_watts}'
     fi
 else
-    echo -e "${YELLOW}⚠️  SKIP: METRICS_API_KEY not set${NC}"
+    echo -e "${RED}❌ ERROR: Cannot read GPU temperature${NC}"
+    CRITICAL_ISSUES=$((CRITICAL_ISSUES + 1))
 fi
 
 # Check 2: Service Status
@@ -157,15 +153,13 @@ echo ""
 echo "Checking API endpoints..."
 
 # llama-server health
-if [ -n "$LLAMA_API_KEY" ]; then
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $LLAMA_API_KEY" http://localhost:8082/chat/health 2>/dev/null)
-    if [ "$HTTP_CODE" = "200" ]; then
-        echo -e "${GREEN}✅ OK: llama-server health check passed${NC}"
-    else
-        echo -e "${RED}❌ ERROR: llama-server health check failed (HTTP $HTTP_CODE)${NC}"
-        log_alert "CRITICAL" "llama-server health check failed"
-        CRITICAL_ISSUES=$((CRITICAL_ISSUES + 1))
-    fi
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/chat/health 2>/dev/null)
+if [ "$HTTP_CODE" = "200" ]; then
+    echo -e "${GREEN}✅ OK: llama-server health check passed${NC}"
+else
+    echo -e "${RED}❌ ERROR: llama-server health check failed (HTTP $HTTP_CODE)${NC}"
+    log_alert "CRITICAL" "llama-server health check failed"
+    CRITICAL_ISSUES=$((CRITICAL_ISSUES + 1))
 fi
 
 # Frontend

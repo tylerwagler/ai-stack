@@ -80,18 +80,13 @@ def clear_caches():
     """Clear global caches before each test"""
     import proxy
     proxy.KEY_CACHE.clear()
-    proxy.LOADED_MODEL_CACHE = None
-    proxy.LOADED_MODEL_CACHE_TIME = 0
     yield
     # Cleanup after test
     proxy.KEY_CACHE.clear()
-    proxy.LOADED_MODEL_CACHE = None
-    proxy.LOADED_MODEL_CACHE_TIME = 0
 
 @pytest.fixture
 def mock_env_vars(monkeypatch):
     """Mock environment variables"""
-    monkeypatch.setenv("LLAMA_API_KEY", "sk-test-system-key")
     monkeypatch.setenv("POSTGRES_DB", "test_db")
     monkeypatch.setenv("POSTGRES_USER", "test_user")
     monkeypatch.setenv("POSTGRES_PASSWORD", "test_pass")

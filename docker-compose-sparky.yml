@@ -22,46 +22,21 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------
-  # vLLM Inference Engine (Port 8000)
-  # Serves GLM-4.7-Flash-AWQ with runtime patches
+  # MODEL MANAGER (Port 8100)
+  # Dynamic container manager — loads/unloads vLLM models on demand
   # ---------------------------------------------------------
-  vllm-server:
-    image: vllm-node-tf5:latest
-    container_name: vllm-server
+  model-manager:
+    build:
+      context: ./model-manager
+      args:
+        MODELS_INI: sparky-models.ini
+    container_name: model-manager
     restart: always
-    ipc: host
-    ports:
-      - "8000:8000"
+    network_mode: host
     volumes:
-      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
-      - /home/tyler/.cache/vllm:/root/.cache/vllm
-      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
-      - /home/tyler/.triton:/root/.triton
-      - ./spark-vllm-docker/mods/fix-glm-4.7-flash-AWQ:/mods/fix-glm-4.7-flash-AWQ:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/tyler/.cache/huggingface/hub:/cache/huggingface/hub
     environment:
-      - NCCL_IGNORE_CPU_AFFINITY=1
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        echo "Applying GLM-4.7-Flash-AWQ patches..."
-        cd /mods/fix-glm-4.7-flash-AWQ && bash run.sh || echo "Patch not applicable, skipping"
-        echo "Starting vLLM..."
-        exec vllm serve cyankiwi/GLM-4.7-Flash-AWQ-4bit \
-          --tool-call-parser glm47 \
-          --reasoning-parser glm45 \
-          --enable-auto-tool-choice \
-          --served-model-name glm-4.7-flash \
-          --max-model-len 202752 \
-          --max-num-batched-tokens 4096 \
-          --max-num-seqs 64 \
-          --gpu-memory-utilization 0.7 \
-          -tp 1 \
-          --host 0.0.0.0 \
-          --port 8000
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - VLLM_IMAGE=${VLLM_IMAGE:-vllm-node:latest}
+      - MAX_GPU_UTILIZATION=${MAX_GPU_UTILIZATION:-0.95}
+      - HF_CACHE_DIR=/cache/huggingface/hub

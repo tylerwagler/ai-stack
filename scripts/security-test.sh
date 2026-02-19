@@ -35,45 +35,13 @@ test_status() {
     fi
 }
 
-# Test 1: Unauthorized access blocked (metrics endpoint)
-if [ -n "$METRICS_API_KEY" ]; then
-    echo -e "${YELLOW}Test 1: Unauthorized access to metrics endpoint...${NC}"
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/metrics)
-    if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
-        test_status 0 "Metrics endpoint blocks unauthorized access"
-    else
-        test_status 1 "Metrics endpoint accessible without auth (got HTTP $HTTP_CODE)"
-    fi
+# Test 1: Metrics endpoint accessible (internal, no auth)
+echo -e "${YELLOW}Test 1: Metrics endpoint accessible...${NC}"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/metrics)
+if [ "$HTTP_CODE" = "200" ]; then
+    test_status 0 "Metrics endpoint accessible"
 else
-    echo -e "${YELLOW}Test 1: SKIPPED - METRICS_API_KEY not set${NC}"
-fi
-
-# Test 2: Valid authentication succeeds
-if [ -n "$METRICS_API_KEY" ]; then
-    echo -e "${YELLOW}Test 2: Valid authentication to metrics endpoint...${NC}"
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "X-API-Key: $METRICS_API_KEY" http://localhost:3001/metrics)
-    if [ "$HTTP_CODE" = "200" ]; then
-        test_status 0 "Valid authentication succeeds"
-    else
-        test_status 1 "Valid authentication rejected (got HTTP $HTTP_CODE)"
-    fi
-else
-    echo -e "${YELLOW}Test 2: SKIPPED - METRICS_API_KEY not set${NC}"
-fi
-
-# Test 3: Invalid API key rejected
-if [ -n "$METRICS_API_KEY" ]; then
-    echo -e "${YELLOW}Test 3: Invalid API key rejected...${NC}"
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "X-API-Key: invalid_key_12345" http://localhost:3001/metrics)
-    if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
-        test_status 0 "Invalid API key rejected"
-    else
-        test_status 1 "Invalid API key accepted (got HTTP $HTTP_CODE)"
-    fi
-else
-    echo -e "${YELLOW}Test 3: SKIPPED - METRICS_API_KEY not set${NC}"
+    test_status 1 "Metrics endpoint not accessible (got HTTP $HTTP_CODE)"
 fi
 
 # Test 4: SQL injection attempt (safe test)
@@ -86,16 +54,11 @@ RESPONSE=$(curl -s -X POST http://localhost:8081/v1/chat/completions \
 
 # Check service is still running
 sleep 2
-if [ -n "$LLAMA_API_KEY" ]; then
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "Authorization: Bearer $LLAMA_API_KEY" http://localhost:8082/chat/health)
-    if [ "$HTTP_CODE" = "200" ]; then
-        test_status 0 "SQL injection attempt did not crash service"
-    else
-        test_status 1 "Service crashed or unhealthy after SQL injection attempt"
-    fi
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/chat/health)
+if [ "$HTTP_CODE" = "200" ]; then
+    test_status 0 "SQL injection attempt did not crash service"
 else
-    echo -e "${YELLOW}Test 4: SKIPPED - LLAMA_API_KEY not set${NC}"
+    test_status 1 "Service crashed or unhealthy after SQL injection attempt"
 fi
 
 # Test 5: Credential leak check
