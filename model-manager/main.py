@@ -106,6 +106,7 @@ class ModelConfig:
         self.default_min_p = config.get("default_min_p", "")
         self.max_output = config.get("max_output", "")
         self.chat_visible = config.get("chat_visible", "true")
+        self.default = config.get("default", "false").lower() in ("true", "1", "yes")
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -553,6 +554,7 @@ class ModelManager:
 
         self._load_catalog()
         self._sync_containers()
+        self._autoload_defaults()
 
     def _load_catalog(self):
         """Load model catalog from INI file."""
@@ -608,6 +610,20 @@ class ModelManager:
 
         running = sum(1 for s in self.states.values() if s.status == "running")
         print(f"Synced with Docker: {running} running containers", file=sys.stderr)
+
+    def _autoload_defaults(self):
+        """Auto-load models marked with default=true that aren't already running."""
+        for model_id, cfg in self.catalog.items():
+            if not cfg.default:
+                continue
+            state = self.states[model_id]
+            if state.status in ("running", "starting"):
+                print(f"Auto-load: {model_id} already {state.status}, skipping", file=sys.stderr)
+                continue
+            print(f"Auto-load: starting {model_id}", file=sys.stderr)
+            result = self.load_model(model_id)
+            if "error" in result:
+                print(f"Auto-load: {model_id} failed: {result['error']}", file=sys.stderr)
 
     def get_catalog(self) -> List[Dict[str, Any]]:
         result = []
