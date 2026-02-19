@@ -4,7 +4,7 @@
 	branch = master
 [submodule "ai-portal"]
 	path = ai-portal
-	url = https://github.com/tylerwagler/temper-view.git
+	url = https://github.com/tylerwagler/ai-portal.git
 	branch = master
 [submodule "spark-vllm-docker"]
 	path = spark-vllm-docker
