@@ -1,0 +1,34 @@
+use_default_settings: true
+
+server:
+  secret_key: "59078654e0ddb57a3e8c054a9d15935a306913567f9b7ee6541f3b3c3cdb6638"
+  limiter: false
+  image_proxy: true
+
+search:
+  safe_search: 0
+  autocomplete: "google"
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+  - name: arxiv
+    engine: arxiv
+    shortcut: arxiv
+  - name: github
+    engine: github
+    shortcut: gh
+
+valkey:
+  url: redis://valkey:6379/0
