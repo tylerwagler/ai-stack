@@ -1,6 +1,6 @@
 # Claude Local Scripts
 
-Wrapper scripts to use Claude Code CLI with your local AI stack (Open WebUI + LiteLLM) instead of Anthropic's cloud API.
+Wrapper scripts to use Claude Code CLI with your local AI stack (Open WebUI + ai-proxy) instead of Anthropic's cloud API.
 
 ## Architecture
 
@@ -8,13 +8,13 @@ All traffic goes through a single gateway on port 3000:
 
 ```
 claude-local → gateway (:3000)
-                 ├─ /v1/*  → auth_request → LiteLLM (Anthropic API)
+                 ├─ /v1/*  → auth_request → ai-proxy (model routing + inference)
                  └─ /*     → Open WebUI (web interface)
 ```
 
 - **Authentication**: Open WebUI manages users and API keys (`sk-*`)
-- **Inference**: LiteLLM serves both Anthropic (`/v1/messages`) and OpenAI (`/v1/chat/completions`) formats
-- **Gateway**: nginx validates your `sk-*` key against Open WebUI, then proxies to LiteLLM with the master key
+- **Inference**: ai-proxy routes requests to the correct backend (llama.cpp, vLLM) based on model config
+- **Gateway**: nginx validates your `sk-*` key against Open WebUI, then proxies to ai-proxy
 
 ## Quick Start
 
@@ -81,7 +81,7 @@ You can now run: ./scripts/claude-local
 
 ## Model Selection
 
-If you don't specify `--model`, the script fetches available models from LiteLLM and prompts you to choose. Models are filtered to exclude non-chat models:
+If you don't specify `--model`, the script fetches available models and prompts you to choose. Models are filtered to exclude non-chat models:
 - Embedding models (e.g. `Qwen3-Embedding-0.6B`)
 - Reranking models (e.g. `Qwen3-Reranker-0.6B`)
 - RAG pipeline models (e.g. `GLM 4.7 Flash (RAG)`)
@@ -126,5 +126,5 @@ The default URL is `http://10.20.10.5:3000`. Override with `--set-url`.
 
 ### Model selection empty
 
-- LiteLLM may still be starting: `docker compose logs litellm`
+- ai-proxy may still be starting: `docker compose logs ai-proxy`
 - Test directly: `curl http://<host>:3000/v1/models -H "x-api-key: sk-..."`

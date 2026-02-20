@@ -1,11 +1,3 @@
-[submodule "llama.cpp"]
-	path = llama.cpp
-	url = https://github.com/tylerwagler/llama.cpp.git
-	branch = master
-[submodule "ai-portal"]
-	path = ai-portal
-	url = https://github.com/tylerwagler/ai-portal.git
-	branch = master
 [submodule "spark-vllm-docker"]
 	path = spark-vllm-docker
 	url = https://github.com/eugr/spark-vllm-docker.git

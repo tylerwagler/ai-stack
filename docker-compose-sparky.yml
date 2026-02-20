@@ -1,27 +1,5 @@
 services:
   # ---------------------------------------------------------
-  # HOST METRICS (Port 3001, read-only)
-  # GPU/host metrics collection via pynvml + psutil
-  # ---------------------------------------------------------
-  host-metrics:
-    build:
-      context: ./host-metrics
-    container_name: host-metrics
-    hostname: sparky
-    restart: always
-    ports:
-      - "3001:3001"
-    environment:
-      - METRICS_API_KEY=${METRICS_API_KEY}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
-  # ---------------------------------------------------------
   # VLLM (Port 8012)
   # Qwen3-Coder-Next — primary coding model
   # ---------------------------------------------------------

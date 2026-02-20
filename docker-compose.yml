@@ -24,7 +24,7 @@ services:
       - --ctx-size
       - "32768"
       - --tensor-split
-      - "22,25"
+      - "23,24"
       - --parallel
       - "1"
       - --cache-type-k
@@ -92,7 +92,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]
               capabilities: [gpu]
 
   # ---------------------------------------------------------
@@ -136,7 +136,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["1"]
               capabilities: [gpu]
 
   # ---------------------------------------------------------
