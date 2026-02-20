@@ -113,6 +113,10 @@ services:
       - ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
       - --ctx-size
       - "8192"
+      - --batch-size
+      - "2048"
+      - --ubatch-size
+      - "2048"
       - --flash-attn
       - "on"
     ports:
