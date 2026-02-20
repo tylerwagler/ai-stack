@@ -1,0 +1,106 @@
+upstream open-webui {
+    server open-webui:8080;
+}
+
+upstream ai-proxy {
+    server ai-proxy:8081;
+}
+
+# Resolve real scheme from X-Forwarded-Proto (set by the TLS-terminating proxy).
+# Defaults to https since all external access goes through the proxy.
+map $http_x_forwarded_proto $real_scheme {
+    https   https;
+    http    http;
+    default https;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 100M;
+
+    # ---------------------------------------------------------
+    # /v1/* — API requests routed through ai-proxy
+    # Auth: validate user's sk-* key against Open WebUI, then
+    # forward to ai-proxy for model-based routing.
+    # Supports both Anthropic (/v1/messages) and OpenAI
+    # (/v1/chat/completions) formats — no translation.
+    # ---------------------------------------------------------
+    location /v1/ {
+        auth_request /_auth;
+
+        proxy_pass http://ai-proxy/v1/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Streaming support
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        chunked_transfer_encoding on;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    # ---------------------------------------------------------
+    # Auth subrequest — validates user's API key against Open WebUI
+    # ---------------------------------------------------------
+    location = /_auth {
+        internal;
+        proxy_pass http://open-webui/api/v1/auths/;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $host;
+
+        # Forward the user's auth header as-is
+        # Open WebUI expects: Authorization: Bearer sk-...
+        # Clients may send x-api-key header instead, so normalize
+        set $auth_header $http_authorization;
+        if ($http_x_api_key) {
+            set $auth_header "Bearer $http_x_api_key";
+        }
+        proxy_set_header Authorization $auth_header;
+    }
+
+    # ---------------------------------------------------------
+    # /install/* — claude-local installer scripts
+    # sub_filter injects the server URL so scripts auto-configure
+    # to the hostname the user actually curled from.
+    # ---------------------------------------------------------
+    location /install/ {
+        alias /usr/share/nginx/html/install/;
+        autoindex off;
+
+        # Prevent upstream proxy from caching (scripts contain dynamic URLs)
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+
+        # Replace placeholder with the URL derived from request headers.
+        # Use $http_x_forwarded_proto directly (maps don't evaluate in sub_filter).
+        # All access goes through the TLS-terminating proxy which sets this header.
+        sub_filter '__SERVER_URL__' '$http_x_forwarded_proto://$http_host';
+        sub_filter_once off;
+        sub_filter_types *;
+    }
+
+    # ---------------------------------------------------------
+    # /* — Open WebUI (web interface, auth, etc.)
+    # ---------------------------------------------------------
+    location / {
+        proxy_pass http://open-webui;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support (Open WebUI uses WebSockets)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}

@@ -1,83 +1,49 @@
-include:
-  - path: supabase-ai/docker-compose.yml
-
 services:
   # ---------------------------------------------------------
-  # llama.cpp image (build-only target — model-manager spawns containers from this image)
+  # LLAMA.CPP (Port 8010)
+  # GLM-4.7-Flash — primary generation model
   # ---------------------------------------------------------
   llama-server:
-    build:
-      context: ./llama.cpp
-      dockerfile: .devops/cuda-new.Dockerfile
-      target: server
-      args:
-        CUDA_VERSION: "13.1.1"
-    image: llama-cpp-server:local
-    profiles:
-      - build-only
-
-  # ---------------------------------------------------------
-  # MODEL MANAGER (Port 8100)
-  # Dynamic container manager — loads/unloads llama.cpp models on demand
-  # ---------------------------------------------------------
-  model-manager:
-    build:
-      context: ./model-manager
-      args:
-        MODELS_INI: ellie-models.ini
-    container_name: model-manager
-    restart: always
-    network_mode: host
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /home/tyler/.cache/llama.cpp:/cache/llama.cpp
-      - /home/tyler/.cache/huggingface/hub:/cache/huggingface/hub:ro
-    environment:
-      - LLAMA_IMAGE=llama-cpp-server:local
-      - MAX_CONCURRENT_MODELS=1
-      - LLAMA_CACHE_DIR=/cache/llama.cpp
-      - HF_CACHE_DIR=/cache/huggingface/hub
-
-  ai-proxy:
-    build:
-      context: ./ai-proxy
-    container_name: ai-proxy
-    restart: always
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda13
+    container_name: llama-server
+    restart: unless-stopped
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8010"
+      - --metrics
+      - --poll
+      - "100"
+      - --alias
+      - "GLM 4.7 Flash"
+      - --hf-repo
+      - unsloth/GLM-4.7-Flash-GGUF
+      - --hf-file
+      - GLM-4.7-Flash-Q6_K.gguf
+      - --ctx-size
+      - "32768"
+      - --tensor-split
+      - "22,25"
+      - --parallel
+      - "1"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --flash-attn
+      - "on"
     ports:
-      - "8081:8081"
-    environment:
-      - PROXY_PORT=8081
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=db
-      - POSTGRES_PORT=5433
-      - ELLIE_MANAGER_HOST=${ELLIE_MANAGER_HOST:-172.17.0.1:8100}
-      - SPARKY_MANAGER_HOST=${SPARKY_MANAGER_HOST:-10.20.10.10:8100}
-      - SUPABASE_INTERNAL_URL=http://ai-supabase-kong:8000
-    networks:
-      - default
-      - ai-stack-net
+      - "8010:8010"
     volumes:
-      - ./ai-proxy/logs:/app/logs
-    depends_on:
-      db:
-        condition: service_healthy
-
-  # ---------------------------------------------------------
-  # HOST METRICS (Port 3001, read-only)
-  # GPU/host metrics collection via pynvml + psutil
-  # ---------------------------------------------------------
-  host-metrics:
-    build:
-      context: ./host-metrics
-    container_name: host-metrics
-    hostname: ellie
-    restart: always
-    ports:
-      - "3001:3001"
+      - /home/tyler/.cache/llama.cpp:/root/.cache/llama.cpp
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
-      - default
       - ai-stack-net
     deploy:
       resources:
@@ -86,6 +52,215 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # LLAMA EMBED (Port 8011)
+  # Qwen3-Embedding-0.6B — dense vector embeddings
+  # ---------------------------------------------------------
+  llama-embed:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda13
+    container_name: llama-embed
+    restart: unless-stopped
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8011"
+      - --embedding
+      - --hf-repo
+      - Qwen/Qwen3-Embedding-0.6B-GGUF
+      - --hf-file
+      - Qwen3-Embedding-0.6B-Q8_0.gguf
+      - --ctx-size
+      - "8192"
+      - --flash-attn
+      - "on"
+    ports:
+      - "8011:8011"
+    volumes:
+      - /home/tyler/.cache/llama.cpp:/root/.cache/llama.cpp
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - ai-stack-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # LLAMA RERANK (Port 8013)
+  # Qwen3-Reranker-0.6B — cross-encoder reranking
+  # ---------------------------------------------------------
+  llama-rerank:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda13
+    container_name: llama-rerank
+    restart: unless-stopped
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8013"
+      - --reranking
+      - --hf-repo
+      - ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
+      - --ctx-size
+      - "8192"
+      - --flash-attn
+      - "on"
+    ports:
+      - "8013:8013"
+    volumes:
+      - /home/tyler/.cache/llama.cpp:/root/.cache/llama.cpp
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8013/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - ai-stack-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # QDRANT (Port 6333)
+  # Vector database for document search
+  # ---------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------
+  # VALKEY (Port 6379)
+  # Redis-compatible cache for SearXNG
+  # ---------------------------------------------------------
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: valkey
+    restart: always
+    command: valkey-server --save 60 1 --loglevel warning
+    volumes:
+      - valkey_data:/data
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------
+  # SEARXNG (Port 8888)
+  # Private web search engine for RAG retrieval
+  # ---------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: always
+    ports:
+      - "8888:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    networks:
+      - ai-stack-net
+    depends_on:
+      - valkey
+
+  # ---------------------------------------------------------
+  # AI PROXY (Port 8081)
+  # Lightweight model routing proxy — passes through both
+  # Anthropic and OpenAI formats without translation.
+  # ---------------------------------------------------------
+  ai-proxy:
+    build:
+      context: ./ai-proxy
+    container_name: ai-proxy
+    restart: always
+    ports:
+      - "8081:8081"
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------
+  # GATEWAY (Port 3000)
+  # Nginx reverse proxy: /v1/* → ai-proxy (with auth), /* → Open WebUI
+  # ---------------------------------------------------------
+  gateway:
+    build:
+      context: ./gateway
+    container_name: gateway
+    restart: always
+    ports:
+      - "3000:80"
+    networks:
+      - ai-stack-net
+    depends_on:
+      - open-webui
+      - ai-proxy
+
+  # ---------------------------------------------------------
+  # OPEN WEBUI (internal, behind gateway)
+  # Web chat interface with built-in RAG
+  # ---------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    restart: always
+    environment:
+      # --- LLM Backend (ai-proxy routes to correct model) ---
+      - OPENAI_API_BASE_URLS=http://ai-proxy:8081/v1
+      - OPENAI_API_KEYS=sk-no-key-required
+      # --- API Keys (allow users to generate sk-* keys) ---
+      - ENABLE_API_KEYS=true
+      # --- Embeddings (direct to llama-embed) ---
+      - RAG_EMBEDDING_ENGINE=openai
+      - RAG_OPENAI_API_BASE_URL=http://llama-embed:8011/v1
+      - RAG_OPENAI_API_KEY=sk-no-key-required
+      - RAG_EMBEDDING_MODEL=Qwen3-Embedding-0.6B
+      - RAG_EMBEDDING_BATCH_SIZE=16
+      # --- Vector DB (Qdrant) ---
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://qdrant:6333
+      # --- Web Search (SearXNG) ---
+      - ENABLE_RAG_WEB_SEARCH=true
+      - RAG_WEB_SEARCH_ENGINE=searxng
+      - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>
+      - RAG_WEB_SEARCH_RESULT_COUNT=5
+      - RAG_WEB_SEARCH_CONCURRENT_REQUESTS=10
+      # --- Hybrid Search + Reranking (direct to llama-rerank) ---
+      - ENABLE_RAG_HYBRID_SEARCH=true
+      - RAG_RERANKING_MODEL=Qwen3-Reranker-0.6B
+      - RAG_RERANKING_ENGINE=external
+      - RAG_EXTERNAL_RERANKER_URL=http://llama-rerank:8013/v1/rerank
+      - RAG_EXTERNAL_RERANKER_API_KEY=sk-no-key-required
+      - RAG_TOP_K=10
+      - RAG_RELEVANCE_THRESHOLD=0.1
+    volumes:
+      - open_webui_data:/app/backend/data
+    networks:
+      - ai-stack-net
+    depends_on:
+      - ai-proxy
+      - qdrant
+      - searxng
 
   # ---------------------------------------------------------
   # FAN CONTROL (internal, no ports)
@@ -109,42 +284,11 @@ services:
               count: all
               capabilities: [gpu]
 
-  stripe-handler:
-    build:
-      context: ./stripe-handler
-    container_name: stripe-handler
-    restart: always
-    environment:
-      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
-      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=db
-      - POSTGRES_PORT=5433
-      - PORTAL_URL=https://ellie.elytrondefense.com
-    networks:
-      - default
-      - ai-stack-net
-    depends_on:
-      db:
-        condition: service_healthy
-
-  ai-portal:
-    build:
-      context: ./ai-portal
-      args:
-        VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
-    container_name: ai-portal
-    restart: always
-    ports:
-      - "3000:80"
-    networks:
-      - default
-      - ai-stack-net
-
 networks:
   ai-stack-net:
     external: true
 
 volumes:
-  llama_cache:
+  open_webui_data:
+  qdrant_data:
+  valkey_data:

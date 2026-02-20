@@ -22,21 +22,59 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------
-  # MODEL MANAGER (Port 8100)
-  # Dynamic container manager — loads/unloads vLLM models on demand
+  # VLLM (Port 8012)
+  # Qwen3-Coder-Next — primary coding model
   # ---------------------------------------------------------
-  model-manager:
-    build:
-      context: ./model-manager
-      args:
-        MODELS_INI: sparky-models.ini
-    container_name: model-manager
-    restart: always
-    network_mode: host
+  vllm-qwen3-coder:
+    image: vllm-node:latest
+    container_name: vllm-qwen3-coder
+    restart: unless-stopped
+    command:
+      - vllm
+      - serve
+      - Qwen/Qwen3-Coder-Next-FP8
+      - --served-model-name
+      - "Qwen3 Coder Next"
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8012"
+      - --max-model-len
+      - "262144"
+      - --max-num-seqs
+      - "64"
+      - --gpu-memory-utilization
+      - "0.7"
+      - -tp
+      - "1"
+      - --kv-cache-dtype
+      - fp8
+      - --dtype
+      - bfloat16
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --load-format
+      - fastsafetensors
+      - --attention-backend
+      - flashinfer
+      - --enable-prefix-caching
+      - --seed
+      - "3407"
+    ports:
+      - "8012:8012"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /home/tyler/.cache/huggingface/hub:/cache/huggingface/hub
-    environment:
-      - VLLM_IMAGE=${VLLM_IMAGE:-vllm-node:latest}
-      - MAX_GPU_UTILIZATION=${MAX_GPU_UTILIZATION:-0.95}
-      - HF_CACHE_DIR=/cache/huggingface/hub
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

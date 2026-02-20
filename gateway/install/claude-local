@@ -4,20 +4,22 @@
 # Uses Open WebUI for authentication and LiteLLM (via gateway) for inference.
 # All traffic goes through a single port (gateway on :3000).
 #
+# Install: curl -fsSL https://YOUR-HOST:3000/install/setup.sh | bash
+#
 # Usage:
-#   ./claude-local [args]                    # Launch Claude Code
-#   ./claude-local --login                   # Login and retrieve/create API key
-#   ./claude-local --set-key <api-key>       # Set API key manually
-#   ./claude-local --set-url <base-url>      # Set base URL
-#   ./claude-local --config                  # Show current config
-#   ./claude-local --reset-config            # Reset all config
-#   ./claude-local --help                    # Show this help
-#   ./claude-local --version                 # Show version
+#   claude-local [args]                    # Launch Claude Code
+#   claude-local --login                   # Login and retrieve/create API key
+#   claude-local --set-key <api-key>       # Set API key manually
+#   claude-local --set-url <base-url>      # Set base URL
+#   claude-local --config                  # Show current config
+#   claude-local --update                  # Update this script from the server
+#   claude-local --reset-config            # Reset all config
+#   claude-local --help                    # Show this help
+#   claude-local --version                 # Show version
 
-VERSION="2.0.0"
+VERSION="2.1.5"
 CONFIG_DIR="$HOME/.config/claude-local"
 CONFIG_FILE="$CONFIG_DIR/env"
-DEFAULT_URL="http://10.20.10.5:3000"
 
 # --- JSON helpers (jq preferred, python3 fallback) ---
 json_get() {
@@ -60,7 +62,20 @@ load_config() {
 }
 
 get_url() {
-    echo "${CLAUDE_LOCAL_URL:-$DEFAULT_URL}"
+    echo "${CLAUDE_LOCAL_URL}"
+}
+
+ensure_url() {
+    if [ -z "$CLAUDE_LOCAL_URL" ]; then
+        read -rp "Server URL (e.g. http://10.20.10.5:3000): " CLAUDE_LOCAL_URL
+        if [ -z "$CLAUDE_LOCAL_URL" ]; then
+            echo "Error: URL is required."
+            exit 1
+        fi
+        # Strip trailing slash
+        CLAUDE_LOCAL_URL="${CLAUDE_LOCAL_URL%/}"
+        save_config
+    fi
 }
 
 # --- Open WebUI authentication ---
@@ -161,7 +176,7 @@ case "$1" in
             echo "Example: $0 --set-url http://10.20.10.5:3000"
             exit 1
         fi
-        CLAUDE_LOCAL_URL="$2"
+        CLAUDE_LOCAL_URL="${2%/}"
         save_config
         echo "Base URL saved to $CONFIG_FILE"
         exit 0
@@ -173,7 +188,7 @@ case "$1" in
         else
             echo "  API Key: (not set)"
         fi
-        echo "  URL: $(get_url)"
+        echo "  URL: ${CLAUDE_LOCAL_URL:-(not set)}"
         exit 0
         ;;
     --reset-config)
@@ -185,7 +200,21 @@ case "$1" in
         fi
         exit 0
         ;;
+    --update)
+        ensure_url
+        echo "Updating claude-local from $(get_url)..."
+        script_path="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+        if curl -fsSL "$(get_url)/install/claude-local" -o "$script_path"; then
+            chmod +x "$script_path"
+            echo "Updated successfully."
+        else
+            echo "Update failed."
+            exit 1
+        fi
+        exit 0
+        ;;
     --login)
+        ensure_url
         echo "Login to AI Stack"
         echo ""
 
@@ -211,7 +240,7 @@ case "$1" in
             echo "API key configured successfully!"
             echo "  Config saved to: $CONFIG_FILE"
             echo ""
-            echo "You can now run: $0"
+            echo "Run 'claude-local' to start Claude Code."
         else
             echo "Failed to retrieve or create API key."
             exit 1
@@ -226,8 +255,9 @@ case "$1" in
         echo "Options:"
         echo "  --login              Login to Open WebUI and save API key"
         echo "  --set-key <key>      Set API key manually"
-        echo "  --set-url <url>      Set gateway URL (default: $DEFAULT_URL)"
+        echo "  --set-url <url>      Set gateway URL"
         echo "  --config             Show current configuration"
+        echo "  --update             Update this script from the server"
         echo "  --reset-config       Delete saved configuration"
         echo "  --help, -h           Show this help"
         echo "  --version            Show version"
@@ -241,6 +271,30 @@ case "$1" in
         exit 0
         ;;
 esac
+
+# --- Ensure URL is set ---
+ensure_url
+
+# --- Auto-update ---
+if [ "${CLAUDE_LOCAL_SKIP_UPDATE:-}" != "1" ]; then
+    remote_version=$(curl -fsSL --connect-timeout 3 --max-time 5 \
+        "$(get_url)/install/version" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$remote_version" ] && [ "$remote_version" != "$VERSION" ]; then
+        echo "Updating claude-local ($VERSION -> $remote_version)..." >&2
+        script_path="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+        if curl -fsSL "$(get_url)/install/claude-local" -o "${script_path}.tmp" 2>/dev/null \
+                && [ -s "${script_path}.tmp" ]; then
+            mv "${script_path}.tmp" "$script_path"
+            chmod +x "$script_path"
+            echo "Updated. Restarting..." >&2
+            export CLAUDE_LOCAL_SKIP_UPDATE=1
+            exec "$script_path" "$@"
+        else
+            rm -f "${script_path}.tmp"
+            echo "Auto-update failed, continuing with current version." >&2
+        fi
+    fi
+fi
 
 echo "claude-local v${VERSION}" >&2
 
@@ -301,7 +355,6 @@ validation_response=$(curl -s -w "\n%{http_code}" \
     -H "x-api-key: $CLAUDE_LOCAL_API_KEY" \
     "${BASE_URL}/v1/models" 2>/dev/null)
 http_code=$(echo "$validation_response" | tail -n1)
-body=$(echo "$validation_response" | sed '$d')
 
 if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
     echo "" >&2
@@ -339,7 +392,7 @@ if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
 elif [ "$http_code" != "200" ]; then
     echo "" >&2
     echo "Warning: Could not validate API key (HTTP $http_code)" >&2
-    echo "AI Stack may not be reachable at: ${BASE_URL}" >&2
+    echo "Server may not be reachable at: ${BASE_URL}" >&2
     echo "Continuing anyway..." >&2
     echo "" >&2
     sleep 2

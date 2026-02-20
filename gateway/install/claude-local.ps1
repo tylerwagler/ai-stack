@@ -3,12 +3,15 @@
 # Uses Open WebUI for authentication and LiteLLM (via gateway) for inference.
 # All traffic goes through a single port (gateway on :3000).
 #
+# Install: irm https://YOUR-HOST:3000/install/setup.ps1 | iex
+#
 # Usage:
 #   .\claude-local.ps1 [args]                    # Launch Claude Code
 #   .\claude-local.ps1 -Login                    # Login and retrieve/create API key
 #   .\claude-local.ps1 -SetKey <api-key>         # Set API key manually
 #   .\claude-local.ps1 -SetUrl <base-url>        # Set base URL
 #   .\claude-local.ps1 -Config                   # Show current config
+#   .\claude-local.ps1 -Update                   # Update this script from the server
 #   .\claude-local.ps1 -ResetConfig              # Reset all config
 #   .\claude-local.ps1 -Version                  # Show version
 
@@ -17,16 +20,17 @@ param(
     [string]$SetKey,
     [string]$SetUrl,
     [switch]$Config,
+    [switch]$Update,
     [switch]$ResetConfig,
+    [switch]$Help,
     [switch]$Version,
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$ClaudeArgs
 )
 
-$ScriptVersion = "2.0.0"
+$ScriptVersion = "2.1.5"
 $ConfigDir = "$env:USERPROFILE\.config\claude-local"
 $ConfigFile = "$ConfigDir\env"
-$DefaultUrl = "http://10.20.10.5:3000"
 
 # --- Config management ---
 
@@ -55,9 +59,16 @@ function Load-Config {
     }
 }
 
-function Get-BaseUrl {
-    if ($script:BaseUrl) { return $script:BaseUrl }
-    return $DefaultUrl
+function Ensure-Url {
+    if (-not $script:BaseUrl) {
+        $script:BaseUrl = Read-Host "Server URL (e.g. http://10.20.10.5:3000)"
+        if (-not $script:BaseUrl) {
+            Write-Host "Error: URL is required." -ForegroundColor Red
+            exit 1
+        }
+        $script:BaseUrl = $script:BaseUrl.TrimEnd('/')
+        Save-Config
+    }
 }
 
 # --- Open WebUI authentication ---
@@ -147,6 +158,25 @@ if ($Version) {
     exit 0
 }
 
+if ($Help) {
+    Write-Host "claude-local v$ScriptVersion — Launch Claude Code with local AI inference" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Usage: .\claude-local.ps1 [options] [claude args...]"
+    Write-Host ""
+    Write-Host "Options:"
+    Write-Host "  -Login           Login to Open WebUI and save API key"
+    Write-Host "  -SetKey <key>    Set API key manually"
+    Write-Host "  -SetUrl <url>    Set gateway URL"
+    Write-Host "  -Config          Show current configuration"
+    Write-Host "  -Update          Update this script from the server"
+    Write-Host "  -ResetConfig     Delete saved configuration"
+    Write-Host "  -Version         Show version"
+    Write-Host "  -Help            Show this help"
+    Write-Host ""
+    Write-Host "All other arguments are passed to 'claude' directly."
+    exit 0
+}
+
 if ($SetKey) {
     $script:ApiKey = $SetKey
     Save-Config
@@ -155,7 +185,7 @@ if ($SetKey) {
 }
 
 if ($SetUrl) {
-    $script:BaseUrl = $SetUrl
+    $script:BaseUrl = $SetUrl.TrimEnd('/')
     Save-Config
     Write-Host "Base URL saved to $ConfigFile" -ForegroundColor Green
     exit 0
@@ -169,7 +199,7 @@ if ($Config) {
     } else {
         Write-Host "  API Key: (not set)" -ForegroundColor Yellow
     }
-    Write-Host "  URL: $(Get-BaseUrl)"
+    Write-Host "  URL: $(if ($script:BaseUrl) { $script:BaseUrl } else { '(not set)' })"
     exit 0
 }
 
@@ -183,7 +213,23 @@ if ($ResetConfig) {
     exit 0
 }
 
+if ($Update) {
+    Ensure-Url
+    Write-Host "Updating claude-local.ps1 from $($script:BaseUrl)..."
+    $scriptPath = $MyInvocation.MyCommand.Path
+    try {
+        Invoke-WebRequest -Uri "$($script:BaseUrl)/install/claude-local.ps1" -OutFile $scriptPath -ErrorAction Stop
+        Write-Host "Updated successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+    exit 0
+}
+
 if ($Login) {
+    Ensure-Url
     Write-Host "Login to AI Stack" -ForegroundColor Cyan
     Write-Host ""
 
@@ -195,7 +241,7 @@ if ($Login) {
 
     $password = Read-Host "Password" -AsSecureString
 
-    $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -Url (Get-BaseUrl)
+    $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -Url $script:BaseUrl
 
     if ($retrievedKey) {
         $script:ApiKey = $retrievedKey
@@ -204,13 +250,56 @@ if ($Login) {
         Write-Host "API key configured successfully!" -ForegroundColor Green
         Write-Host "  Config saved to: $ConfigFile"
         Write-Host ""
-        Write-Host "You can now run: .\claude-local.ps1"
+        Write-Host "Run 'claude-local.ps1' to start Claude Code."
     } else {
         Write-Host "Failed to retrieve or create API key." -ForegroundColor Red
         exit 1
     }
     exit 0
 }
+
+# --- Ensure URL is set ---
+Ensure-Url
+
+# --- Auto-update ---
+if ($env:CLAUDE_LOCAL_SKIP_UPDATE -ne "1") {
+    try {
+        $versionUrl = "$($script:BaseUrl)/install/version"
+        $remoteVersion = (Invoke-RestMethod -Uri $versionUrl `
+            -TimeoutSec 5 -ErrorAction Stop).Trim()
+        if ($remoteVersion -and $remoteVersion -ne $ScriptVersion) {
+            Write-Host "Updating claude-local.ps1 ($ScriptVersion -> $remoteVersion)..." -ForegroundColor Yellow
+            $scriptPath = $MyInvocation.MyCommand.Path
+            if (-not $scriptPath) {
+                $scriptPath = (Get-Command claude-local.ps1 -ErrorAction SilentlyContinue).Source
+            }
+            if (-not $scriptPath) {
+                Write-Host "Auto-update failed: cannot determine script path." -ForegroundColor Yellow
+            } else {
+                try {
+                    Invoke-WebRequest -Uri "$($script:BaseUrl)/install/claude-local.ps1" `
+                        -OutFile "$scriptPath.tmp" -ErrorAction Stop
+                    if ((Get-Item "$scriptPath.tmp").Length -gt 0) {
+                        Move-Item "$scriptPath.tmp" $scriptPath -Force
+                        Write-Host "Updated. Restarting..." -ForegroundColor Green
+                        $env:CLAUDE_LOCAL_SKIP_UPDATE = "1"
+                        & $scriptPath @ClaudeArgs
+                        exit $LASTEXITCODE
+                    } else {
+                        Remove-Item "$scriptPath.tmp" -Force -ErrorAction SilentlyContinue
+                        Write-Host "Auto-update failed: empty download." -ForegroundColor Yellow
+                    }
+                } catch {
+                    Remove-Item "$scriptPath.tmp" -Force -ErrorAction SilentlyContinue
+                    Write-Host "Auto-update download failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+            }
+        }
+    } catch {
+        Write-Host "Update check failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
+}
+Remove-Item Env:CLAUDE_LOCAL_SKIP_UPDATE -ErrorAction SilentlyContinue
 
 Write-Host "claude-local v$ScriptVersion" -ForegroundColor Cyan
 
@@ -234,7 +323,7 @@ if (-not $script:ApiKey) {
         }
 
         $password = Read-Host "Password" -AsSecureString
-        $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -Url (Get-BaseUrl)
+        $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -Url $script:BaseUrl
 
         if ($retrievedKey) {
             $script:ApiKey = $retrievedKey
@@ -258,11 +347,10 @@ if (-not $script:ApiKey) {
 }
 
 # --- Validate API key ---
-$url = Get-BaseUrl
 Write-Host "Validating API key..." -ForegroundColor Cyan
 
 try {
-    $null = Invoke-WebRequest -Uri "$url/v1/models" `
+    $null = Invoke-WebRequest -Uri "$($script:BaseUrl)/v1/models" `
         -Headers @{ "x-api-key" = $script:ApiKey } `
         -Method Get -UseBasicParsing -ErrorAction Stop
 
@@ -277,7 +365,7 @@ catch {
         if ($resp -match '^[Yy]') {
             $email = Read-Host "Email"
             $password = Read-Host "Password" -AsSecureString
-            $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -Url $url
+            $retrievedKey = Get-ApiKeyFromLogin -Email $email -Password $password -Url $script:BaseUrl
             if ($retrievedKey) {
                 $script:ApiKey = $retrievedKey
                 Save-Config
@@ -291,7 +379,7 @@ catch {
 # --- Set environment for Claude Code ---
 Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
 $env:ANTHROPIC_AUTH_TOKEN = $script:ApiKey
-$env:ANTHROPIC_BASE_URL = $url
+$env:ANTHROPIC_BASE_URL = $script:BaseUrl
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
 
 # --- Default model ---
