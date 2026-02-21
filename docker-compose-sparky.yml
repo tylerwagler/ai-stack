@@ -29,6 +29,7 @@ services:
       - "16"
       - --dtype
       - bfloat16
+      - --disable-frontend-multiprocessing
     ports:
       - "8016:8016"
     volumes:
@@ -88,6 +89,7 @@ services:
       - --enable-prefix-caching
       - --seed
       - "3407"
+      - --disable-frontend-multiprocessing
     ports:
       - "8012:8012"
     volumes:

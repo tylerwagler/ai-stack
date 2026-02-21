@@ -87,6 +87,7 @@ services:
       - "16"
       - --dtype
       - float16
+      - --disable-frontend-multiprocessing
     environment:
       - LD_LIBRARY_PATH=/lib/x86_64-linux-gnu
     ports:
