@@ -1,5 +1,54 @@
 services:
   # ---------------------------------------------------------
+  # VLLM RERANKER (Port 8016)
+  # Qwen3-VL-Reranker-2B on GPU via vLLM
+  # ---------------------------------------------------------
+  vllm-reranker:
+    image: vllm-node:latest
+    container_name: vllm-reranker
+    restart: unless-stopped
+    command:
+      - vllm
+      - serve
+      - Qwen/Qwen3-VL-Reranker-2B
+      - --port
+      - "8016"
+      - --runner
+      - pooling
+      - --trust-remote-code
+      - --hf-overrides
+      - '{"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+      - --chat-template
+      - /app/templates/qwen3_vl_reranker.jinja
+      - --gpu-memory-utilization
+      - "0.10"
+      - --enforce-eager
+      - --max-model-len
+      - "4096"
+      - --max-num-seqs
+      - "16"
+      - --dtype
+      - bfloat16
+    ports:
+      - "8016:8016"
+    volumes:
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - ./vl-embed/qwen3_vl_reranker.jinja:/app/templates/qwen3_vl_reranker.jinja:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8016/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
   # VLLM (Port 8012)
   # Qwen3-Coder-Next — primary coding model
   # ---------------------------------------------------------

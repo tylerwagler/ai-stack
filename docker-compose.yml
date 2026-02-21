@@ -20,9 +20,9 @@ services:
       - --hf-repo
       - unsloth/GLM-4.7-Flash-GGUF
       - --hf-file
-      - GLM-4.7-Flash-Q6_K.gguf
+      - GLM-4.7-Flash-UD-Q5_K_XL.gguf
       - --ctx-size
-      - "32768"
+      - "16384"
       - --tensor-split
       - "23,24"
       - --parallel
@@ -33,6 +33,14 @@ services:
       - q8_0
       - --flash-attn
       - "on"
+      - --temp
+      - "0.7"
+      - --top-p
+      - "1.0"
+      - --min-p
+      - "0.01"
+      - --seed
+      - "3407"
     ports:
       - "8010:8010"
     volumes:
@@ -54,90 +62,140 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------
-  # LLAMA EMBED (Port 8011)
-  # Qwen3-Embedding-0.6B — dense vector embeddings
+  # VL EMBED GPU (Port 8015)
+  # Qwen3-VL-Embedding-2B on GPU via vLLM
   # ---------------------------------------------------------
-  llama-embed:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda13
-    container_name: llama-embed
+  vl-embed-gpu:
+    image: vllm/vllm-openai:latest
+    container_name: vl-embed-gpu
     restart: unless-stopped
     command:
-      - --host
-      - "0.0.0.0"
+      - Qwen/Qwen3-VL-Embedding-2B
       - --port
-      - "8011"
-      - --embedding
-      - --hf-repo
-      - Qwen/Qwen3-Embedding-0.6B-GGUF
-      - --hf-file
-      - Qwen3-Embedding-0.6B-Q8_0.gguf
-      - --ctx-size
-      - "8192"
-      - --flash-attn
-      - "on"
+      - "8015"
+      - --runner
+      - pooling
+      - --trust-remote-code
+      - --tensor-parallel-size
+      - "2"
+      - --gpu-memory-utilization
+      - "0.29"
+      - --enforce-eager
+      - --max-model-len
+      - "4096"
+      - --max-num-seqs
+      - "16"
+      - --dtype
+      - float16
+    environment:
+      - LD_LIBRARY_PATH=/lib/x86_64-linux-gnu
     ports:
-      - "8011:8011"
+      - "8015:8015"
     volumes:
-      - /home/tyler/.cache/llama.cpp:/root/.cache/llama.cpp
-      - /home/tyler/.cache/huggingface:/root/.cache/huggingface:ro
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8011/health"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:8015/health"]
+      interval: 30s
+      timeout: 10s
       retries: 3
+      start_period: 180s
     networks:
       - ai-stack-net
+    depends_on:
+      - llama-server
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0"]
+              count: all
               capabilities: [gpu]
 
   # ---------------------------------------------------------
-  # LLAMA RERANK (Port 8013)
-  # Qwen3-Reranker-0.6B — cross-encoder reranking
+  # LLAMA EMBED (Port 8011) — REPLACED BY vl-embed
+  # Uncomment to revert to GPU-based 0.6B text-only models
   # ---------------------------------------------------------
-  llama-rerank:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda13
-    container_name: llama-rerank
-    restart: unless-stopped
-    command:
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8013"
-      - --reranking
-      - --hf-repo
-      - ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
-      - --ctx-size
-      - "8192"
-      - --batch-size
-      - "2048"
-      - --ubatch-size
-      - "2048"
-      - --flash-attn
-      - "on"
-    ports:
-      - "8013:8013"
-    volumes:
-      - /home/tyler/.cache/llama.cpp:/root/.cache/llama.cpp
-      - /home/tyler/.cache/huggingface:/root/.cache/huggingface:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8013/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    networks:
-      - ai-stack-net
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["1"]
-              capabilities: [gpu]
+  # llama-embed:
+  #   image: ghcr.io/ggml-org/llama.cpp:server-cuda13
+  #   container_name: llama-embed
+  #   restart: unless-stopped
+  #   command:
+  #     - --host
+  #     - "0.0.0.0"
+  #     - --port
+  #     - "8011"
+  #     - --embedding
+  #     - --hf-repo
+  #     - Qwen/Qwen3-Embedding-0.6B-GGUF
+  #     - --hf-file
+  #     - Qwen3-Embedding-0.6B-Q8_0.gguf
+  #     - --ctx-size
+  #     - "8192"
+  #     - --flash-attn
+  #     - "on"
+  #   ports:
+  #     - "8011:8011"
+  #   volumes:
+  #     - /home/tyler/.cache/llama.cpp:/root/.cache/llama.cpp
+  #     - /home/tyler/.cache/huggingface:/root/.cache/huggingface:ro
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8011/health"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #   networks:
+  #     - ai-stack-net
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             device_ids: ["0"]
+  #             capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # LLAMA RERANK (Port 8013) — REPLACED BY vl-embed
+  # Uncomment to revert to GPU-based 0.6B text-only models
+  # ---------------------------------------------------------
+  # llama-rerank:
+  #   image: ghcr.io/ggml-org/llama.cpp:server-cuda13
+  #   container_name: llama-rerank
+  #   restart: unless-stopped
+  #   command:
+  #     - --host
+  #     - "0.0.0.0"
+  #     - --port
+  #     - "8013"
+  #     - --reranking
+  #     - --hf-repo
+  #     - ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
+  #     - --ctx-size
+  #     - "8192"
+  #     - --batch-size
+  #     - "2048"
+  #     - --ubatch-size
+  #     - "2048"
+  #     - --flash-attn
+  #     - "on"
+  #   ports:
+  #     - "8013:8013"
+  #   volumes:
+  #     - /home/tyler/.cache/llama.cpp:/root/.cache/llama.cpp
+  #     - /home/tyler/.cache/huggingface:/root/.cache/huggingface:ro
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8013/health"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #   networks:
+  #     - ai-stack-net
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             device_ids: ["1"]
+  #             capabilities: [gpu]
 
   # ---------------------------------------------------------
   # QDRANT (Port 6333)
@@ -234,11 +292,11 @@ services:
       - OPENAI_API_KEYS=sk-no-key-required
       # --- API Keys (allow users to generate sk-* keys) ---
       - ENABLE_API_KEYS=true
-      # --- Embeddings (direct to llama-embed) ---
+      # --- Embeddings (vLLM GPU service) ---
       - RAG_EMBEDDING_ENGINE=openai
-      - RAG_OPENAI_API_BASE_URL=http://llama-embed:8011/v1
+      - RAG_OPENAI_API_BASE_URL=http://vl-embed-gpu:8015/v1
       - RAG_OPENAI_API_KEY=sk-no-key-required
-      - RAG_EMBEDDING_MODEL=Qwen3-Embedding-0.6B
+      - RAG_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-2B
       - RAG_EMBEDDING_BATCH_SIZE=16
       # --- Vector DB (Qdrant) ---
       - VECTOR_DB=qdrant
@@ -249,11 +307,11 @@ services:
       - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>
       - RAG_WEB_SEARCH_RESULT_COUNT=5
       - RAG_WEB_SEARCH_CONCURRENT_REQUESTS=10
-      # --- Hybrid Search + Reranking (direct to llama-rerank) ---
+      # --- Hybrid Search + Reranking (vLLM on Sparky, direct) ---
       - ENABLE_RAG_HYBRID_SEARCH=true
-      - RAG_RERANKING_MODEL=Qwen3-Reranker-0.6B
+      - RAG_RERANKING_MODEL=Qwen/Qwen3-VL-Reranker-2B
       - RAG_RERANKING_ENGINE=external
-      - RAG_EXTERNAL_RERANKER_URL=http://llama-rerank:8013/v1/rerank
+      - RAG_EXTERNAL_RERANKER_URL=http://10.20.10.10:8016/v1/rerank
       - RAG_EXTERNAL_RERANKER_API_KEY=sk-no-key-required
       - RAG_TOP_K=10
       - RAG_RELEVANCE_THRESHOLD=0.1
