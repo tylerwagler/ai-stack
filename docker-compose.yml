@@ -66,7 +66,7 @@ services:
   # Qwen3-14B-GPTQ-Int8 — subagent model (tool calling)
   # ---------------------------------------------------------
   vllm-qwen3-14b:
-    image: vllm/vllm-openai:cu130-nightly
+    image: vllm/vllm-openai:latest
     container_name: vllm-qwen3-14b
     restart: unless-stopped
     entrypoint: ["vllm", "serve"]
