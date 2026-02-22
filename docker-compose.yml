@@ -69,10 +69,8 @@ services:
     image: vllm/vllm-openai:cu130-nightly
     container_name: vllm-qwen3-14b
     restart: unless-stopped
+    entrypoint: ["vllm", "serve"]
     command:
-      - vllm
-      - serve
-      - --model
       - JunHowie/Qwen3-14B-GPTQ-Int8
       - --served-model-name
       - "Qwen3 14B"
