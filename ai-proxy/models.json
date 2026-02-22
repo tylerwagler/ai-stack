@@ -9,17 +9,21 @@
       "url": "http://llama-server:8010"
     },
     {
+      "names": ["Qwen3 14B", "qwen3-14b"],
+      "url": "http://vllm-qwen3-14b:8014"
+    },
+    {
       "names": ["Qwen3 Coder Next", "qwen3-coder"],
       "url": "http://10.20.10.10:8012"
     }
   ],
   "aliases": {
     "claude-opus-4-6": "qwen3 coder next",
-    "claude-sonnet-4-6": "glm 4.7 flash",
-    "claude-sonnet-4-5-20250929": "glm 4.7 flash",
-    "claude-haiku-4-5-20251001": "glm 4.7 flash",
-    "claude-haiku-4-5": "glm 4.7 flash",
-    "claude-3-5-sonnet-20241022": "glm 4.7 flash",
-    "claude-3-5-haiku-20241022": "glm 4.7 flash"
+    "claude-sonnet-4-6": "qwen3 14b",
+    "claude-sonnet-4-5-20250929": "qwen3 14b",
+    "claude-haiku-4-5-20251001": "qwen3 14b",
+    "claude-haiku-4-5": "qwen3 14b",
+    "claude-3-5-sonnet-20241022": "qwen3 14b",
+    "claude-3-5-haiku-20241022": "qwen3 14b"
   }
 }
