@@ -63,7 +63,7 @@ services:
 
   # ---------------------------------------------------------
   # VLLM QWEN3-14B (Port 8014)
-  # Qwen3-14B-GPTQ-Int8 — subagent model (tool calling)
+  # Qwen3-14B-AWQ — subagent model (tool calling)
   # ---------------------------------------------------------
   vllm-qwen3-14b:
     image: vllm/vllm-openai:latest
@@ -71,7 +71,7 @@ services:
     restart: unless-stopped
     entrypoint: ["vllm", "serve"]
     command:
-      - JunHowie/Qwen3-14B-GPTQ-Int8
+      - Qwen/Qwen3-14B-AWQ
       - --served-model-name
       - "Qwen3 14B"
       - --host
@@ -87,7 +87,7 @@ services:
       - -tp
       - "2"
       - --quantization
-      - gptq_marlin
+      - awq_marlin
       - --dtype
       - float16
       - --enable-auto-tool-choice
