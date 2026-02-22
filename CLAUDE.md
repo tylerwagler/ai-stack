@@ -19,9 +19,8 @@ GPU-accelerated AI inference platform with Open WebUI frontend, model routing, a
 | `gateway` | 3000 | nginx reverse proxy — auth + routing |
 | `open-webui` | (internal) | Web chat UI, user management, API keys, RAG |
 | `ai-proxy` | 8081 | Model routing proxy (Anthropic + OpenAI formats) |
-| `llama-server` | 8010 | GLM-4.7-Flash — primary generation model |
-| `llama-embed` | 8011 | Qwen3-Embedding-0.6B — dense vector embeddings |
-| `llama-rerank` | 8013 | Qwen3-Reranker-0.6B — cross-encoder reranking |
+| `vllm-qwen3-14b` | 8014 | Qwen3-14B-AWQ — sub-agent model (vLLM TP=2) |
+| `llama-server` | 8010 | GLM-4.7-Flash — generation model (stopped) |
 | `qdrant` | 6333 | Vector database for document search |
 | `searxng` | 8888 | Private web search for RAG retrieval |
 | `valkey` | 6379 | Redis-compatible cache for SearXNG |
@@ -43,9 +42,9 @@ Client → gateway (:3000)
            └─ /*         → Open WebUI (web interface)
 
 ai-proxy routes by model name:
-  "GLM 4.7 Flash"    → llama-server:8010 (Ellie)
+  "Qwen3 14B"        → vllm-qwen3-14b:8014 (Ellie, AWQ INT4 TP=2)
   "Qwen3 Coder Next" → 10.20.10.10:8012 (Sparky vLLM)
-  Claude model aliases → mapped to local models
+  Claude model aliases → mapped to Qwen3 14B (haiku/sonnet) or Qwen3 Coder (opus)
 ```
 
 - **Authentication**: Open WebUI manages users and `sk-*` API keys
@@ -120,3 +119,7 @@ curl -X POST http://localhost:8081/v1/chat/completions \
 - Requires `privileged: true` in Docker
 - Check logs: `docker logs fan-control`
 - Verify `FAN_SETPOINTS` format: `50:30 70:65 78:95 80:100`
+
+## Sub-Agent Load Distribution
+
+When spawning sub-agents with the Task tool, prefer `model: "haiku"` for Explore, Bash, and quick research tasks to distribute inference load across backends. The main agent runs on Sparky (Qwen3 Coder); haiku/sonnet aliases route to Ellie (Qwen3 14B AWQ).
