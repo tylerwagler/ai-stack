@@ -87,7 +87,7 @@ services:
       - -tp
       - "2"
       - --quantization
-      - gptq
+      - gptq_marlin
       - --dtype
       - float16
       - --enable-auto-tool-choice
