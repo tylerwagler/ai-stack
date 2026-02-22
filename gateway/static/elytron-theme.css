@@ -1,0 +1,185 @@
+/*
+ * Elytron Defense — Open WebUI Theme
+ *
+ * Brand colors:
+ *   Light blue (accent):  #52AFE6  / rgb(82, 175, 230)
+ *   Dark navy (primary):  #26285E  / rgb(38, 40, 94)
+ *   Text navy:            #2C2E62  / rgb(44, 46, 98)
+ *
+ * Gradient: #52AFE6 → #26285E
+ */
+
+/* ============================================================
+   Dark mode — navy-tinted backgrounds
+   ============================================================ */
+html.dark {
+  --color-gray-950: #0c0d1a;
+  --color-gray-900: #111228;
+  --color-gray-850: #171936;
+  --color-gray-800: #1d1f44;
+  --color-gray-700: #262852;
+  --color-gray-600: #353874;
+}
+
+/* ============================================================
+   Light mode — subtle navy tints
+   ============================================================ */
+html.light {
+  --color-gray-50:  #f0f2fa;
+  --color-gray-100: #e2e5f2;
+  --color-gray-200: #c8cce6;
+  --color-gray-300: #a8aed4;
+}
+
+/* ============================================================
+   Accent / primary color overrides
+   ============================================================ */
+
+/* Send button */
+#send-message-button,
+button[id="send-message-button"] {
+  background-color: #52AFE6 !important;
+  color: #fff !important;
+}
+#send-message-button:hover,
+button[id="send-message-button"]:hover {
+  background-color: #3d9ad4 !important;
+}
+
+/* Primary action buttons */
+button.bg-black,
+button.dark\:bg-white {
+  background-color: #52AFE6 !important;
+  color: #fff !important;
+}
+button.bg-black:hover,
+button.dark\:bg-white:hover {
+  background-color: #3d9ad4 !important;
+}
+
+/* Scrollbar accent */
+::-webkit-scrollbar-thumb {
+  background-color: #26285E !important;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #52AFE6 !important;
+}
+
+/* Links and interactive accent colors */
+a.text-blue-500,
+.text-blue-500 {
+  color: #52AFE6 !important;
+}
+
+/* Active/selected nav items */
+html.dark .bg-gray-900\/50,
+html.dark .bg-gray-850 {
+  background-color: rgba(82, 175, 230, 0.08) !important;
+}
+
+/* Toggle switches when active */
+button[role="switch"][aria-checked="true"] {
+  background-color: #52AFE6 !important;
+}
+
+/* ============================================================
+   Splash / loading screen
+   ============================================================ */
+html.dark #splash-screen {
+  background: #0c0d1a !important;
+}
+
+html.light #splash-screen {
+  background: #f0f2fa !important;
+}
+
+#splash-screen #progress-bar {
+  background-color: #52AFE6 !important;
+}
+
+html.dark #splash-screen #progress-background {
+  background-color: #26285E !important;
+}
+
+/* ============================================================
+   Sidebar logo area — replace Open WebUI branding
+   ============================================================ */
+
+/* Hide the default Open WebUI logo/name in the sidebar */
+#sidebar-logo span.text-lg,
+#sidebar .self-center.font-medium {
+  font-size: 0 !important;
+  line-height: 0 !important;
+}
+#sidebar-logo span.text-lg::after,
+#sidebar .self-center.font-medium::after {
+  content: "Elytron Defense" !important;
+  font-size: 1rem !important;
+  line-height: 1.5 !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em;
+  background: linear-gradient(135deg, #52AFE6, #26285E);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Replace sidebar logo image */
+#sidebar img[src*="favicon"],
+#sidebar img[src*="logo"] {
+  content: url("/static/elytron/favicon.png") !important;
+}
+
+/* ============================================================
+   Login / auth page branding
+   ============================================================ */
+
+/* Replace the logo on the login page */
+.flex.justify-center img[src*="favicon"],
+.flex.justify-center img[src*="logo"],
+img.w-16[src*="favicon"] {
+  content: url("/static/elytron/favicon.png") !important;
+}
+
+/* Style the login page title */
+.text-2xl.font-semibold.text-center,
+.text-3xl.font-bold {
+  background: linear-gradient(135deg, #52AFE6, #26285E) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  background-clip: text !important;
+}
+
+/* Login button */
+button[type="submit"].bg-gray-700,
+.login-form button[type="submit"] {
+  background: linear-gradient(135deg, #52AFE6, #26285E) !important;
+  color: #fff !important;
+  border: none !important;
+}
+
+/* ============================================================
+   Chat area polish
+   ============================================================ */
+
+/* New chat placeholder icon area */
+html.dark .text-gray-300 svg,
+html.dark .text-3xl.font-semibold {
+  opacity: 0.7;
+}
+
+/* Model selector pills */
+button.bg-gray-50.dark\:bg-gray-850 {
+  border: 1px solid rgba(82, 175, 230, 0.15) !important;
+}
+
+/* Message input focus ring */
+html.dark #chat-input:focus-within {
+  outline-color: #52AFE6 !important;
+  border-color: rgba(82, 175, 230, 0.3) !important;
+}
+
+/* Code block accents */
+html.dark pre {
+  border-left: 3px solid #26285E !important;
+}
