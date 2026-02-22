@@ -83,7 +83,7 @@ services:
       - --max-num-seqs
       - "16"
       - --gpu-memory-utilization
-      - "0.95"
+      - "0.90"
       - -tp
       - "2"
       - --quantization
@@ -93,7 +93,6 @@ services:
       - --enable-auto-tool-choice
       - --tool-call-parser
       - hermes
-      - --enforce-eager
       - --enable-prefix-caching
       - --seed
       - "3407"
