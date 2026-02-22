@@ -34,6 +34,8 @@ services:
       - "8016:8016"
     volumes:
       - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
       - ./vl-embed/qwen3_vl_reranker.jinja:/app/templates/qwen3_vl_reranker.jinja:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8016/health"]
@@ -94,6 +96,8 @@ services:
       - "8012:8012"
     volumes:
       - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
       interval: 30s
