@@ -72,6 +72,7 @@ services:
     command:
       - vllm
       - serve
+      - --model
       - JunHowie/Qwen3-14B-GPTQ-Int8
       - --served-model-name
       - "Qwen3 14B"
