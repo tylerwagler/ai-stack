@@ -93,10 +93,13 @@ services:
       - --enable-auto-tool-choice
       - --tool-call-parser
       - hermes
+      - --enforce-eager
       - --enable-prefix-caching
       - --seed
       - "3407"
       - --disable-frontend-multiprocessing
+    environment:
+      - LD_LIBRARY_PATH=/lib/x86_64-linux-gnu
     ports:
       - "8014:8014"
     volumes:
