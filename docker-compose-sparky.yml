@@ -21,8 +21,7 @@ services:
       - --chat-template
       - /app/templates/qwen3_vl_reranker.jinja
       - --gpu-memory-utilization
-      - "0.10"
-      - --enforce-eager
+      - "0.075"
       - --max-model-len
       - "4096"
       - --max-num-seqs
@@ -39,6 +38,52 @@ services:
       - ./vl-embed/qwen3_vl_reranker.jinja:/app/templates/qwen3_vl_reranker.jinja:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8016/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # VLLM EMBED (Port 8015)
+  # Qwen3-VL-Embedding-2B on GPU via vLLM
+  # ---------------------------------------------------------
+  vl-embed-gpu:
+    image: vllm-node:latest
+    container_name: vl-embed-gpu
+    restart: unless-stopped
+    command:
+      - vllm
+      - serve
+      - Qwen/Qwen3-VL-Embedding-2B
+      - --port
+      - "8015"
+      - --runner
+      - pooling
+      - --trust-remote-code
+      - --gpu-memory-utilization
+      - "0.075"
+      - --max-model-len
+      - "4096"
+      - --max-num-seqs
+      - "16"
+      - --dtype
+      - float16
+      - --disable-frontend-multiprocessing
+    ports:
+      - "8015:8015"
+    volumes:
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8015/health"]
       interval: 30s
       timeout: 10s
       retries: 3
