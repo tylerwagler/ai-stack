@@ -98,7 +98,7 @@ services:
 
   # ---------------------------------------------------------
   # VLLM (Port 8012)
-  # Qwen3-Coder-Next FP8-Dynamic (unsloth) — primary coding model
+  # Qwen3-Coder-Next FP8 (official Qwen) — primary coding model
   # ---------------------------------------------------------
   vllm-qwen3-coder:
     image: vllm-node:latest
@@ -110,7 +110,7 @@ services:
         echo "Applying Qwen3-Coder-Next patches..."
         cd /mods/fix-qwen3-coder-next && bash run.sh || echo "Patches not applicable, skipping"
         echo "Starting vLLM..."
-        exec vllm serve unsloth/Qwen3-Coder-Next-FP8-Dynamic \
+        exec vllm serve Qwen/Qwen3-Coder-Next-FP8 \
           --served-model-name "Qwen3 Coder Next" \
           --host 0.0.0.0 \
           --port 8012 \
