@@ -128,8 +128,9 @@ services:
       - flashinfer
       - --enable-auto-tool-choice
       - --tool-call-parser
-      - qwen3_coder
-      - --enable-prefix-caching
+      - qwen3_xml
+      - --speculative-config
+      - '{"method":"qwen3_next_mtp","num_speculative_tokens":1}'
       - --seed
       - "3407"
       - --disable-frontend-multiprocessing
