@@ -98,40 +98,47 @@ services:
 
   # ---------------------------------------------------------
   # VLLM (Port 8012)
-  # Qwen3-Coder-Next FP8 (official Qwen) — primary coding model
+  # Qwen3.5-35B-A3B-FP8 — primary coding model (MoE, ~18GB)
   # ---------------------------------------------------------
-  vllm-qwen3-coder:
+  vllm-qwen35:
     image: vllm-node:latest
-    container_name: vllm-qwen3-coder
+    container_name: vllm-qwen35
     restart: unless-stopped
-    entrypoint: ["/bin/bash", "-c"]
     command:
-      - |
-        echo "Applying Qwen3-Coder-Next patches..."
-        cd /mods/fix-qwen3-coder-next && bash run.sh || echo "Patches not applicable, skipping"
-        echo "Starting vLLM..."
-        exec vllm serve Qwen/Qwen3-Coder-Next-FP8 \
-          --served-model-name "Qwen3 Coder Next" \
-          --host 0.0.0.0 \
-          --port 8012 \
-          --max-model-len 131072 \
-          --max-num-seqs 64 \
-          --gpu-memory-utilization 0.70 \
-          --kv-cache-dtype fp8 \
-          --load-format fastsafetensors \
-          --attention-backend flashinfer \
-          --enable-auto-tool-choice \
-          --tool-call-parser qwen3_coder \
-          --enable-prefix-caching \
-          --seed 3407 \
-          --disable-frontend-multiprocessing
+      - vllm
+      - serve
+      - Qwen/Qwen3.5-35B-A3B-FP8
+      - --served-model-name
+      - "Qwen3.5 35B"
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8012"
+      - --max-model-len
+      - "262144"
+      - --max-num-seqs
+      - "64"
+      - --gpu-memory-utilization
+      - "0.50"
+      - --reasoning-parser
+      - qwen3
+      - --load-format
+      - fastsafetensors
+      - --attention-backend
+      - flashinfer
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --enable-prefix-caching
+      - --seed
+      - "3407"
+      - --disable-frontend-multiprocessing
     ports:
       - "8012:8012"
     volumes:
       - /home/tyler/.cache/huggingface:/root/.cache/huggingface
       - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
       - /home/tyler/.cache/vllm:/root/.cache/vllm
-      - ./spark-vllm-docker/mods/fix-qwen3-coder-next:/mods/fix-qwen3-coder-next:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
       interval: 30s
