@@ -2,10 +2,6 @@ upstream open-webui {
     server open-webui:8080;
 }
 
-upstream ai-proxy {
-    server ai-proxy:8081;
-}
-
 # Resolve real scheme from X-Forwarded-Proto (set by the TLS-terminating proxy).
 # Defaults to https since all external access goes through the proxy.
 map $http_x_forwarded_proto $real_scheme {
@@ -21,29 +17,11 @@ server {
     client_max_body_size 100M;
 
     # ---------------------------------------------------------
-    # /v1/* — API requests routed through ai-proxy
-    # Auth: validate user's sk-* key against Open WebUI, then
-    # forward to ai-proxy for model-based routing.
-    # Supports both Anthropic (/v1/messages) and OpenAI
-    # (/v1/chat/completions) formats — no translation.
+    # /v1/* — Rewrite to Open WebUI's /api/* endpoint
+    # Open WebUI handles auth via its own API key validation.
     # ---------------------------------------------------------
     location /v1/ {
-        auth_request /_auth;
-
-        proxy_pass http://ai-proxy/v1/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Streaming support
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-        chunked_transfer_encoding on;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
+        rewrite ^/v1/(.*)$ /api/$1 last;
     }
 
     # ---------------------------------------------------------

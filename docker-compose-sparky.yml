@@ -122,6 +122,8 @@ services:
       - "0.50"
       - --reasoning-parser
       - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking":true}'
       - --load-format
       - fastsafetensors
       - --attention-backend
