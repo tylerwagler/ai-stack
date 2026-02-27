@@ -3,9 +3,9 @@ services:
   # VLLM RERANKER (Port 8016)
   # Qwen3-VL-Reranker-2B on GPU via vLLM
   # ---------------------------------------------------------
-  vllm-reranker:
+  sparky-reranker:
     image: vllm-node:latest
-    container_name: vllm-reranker
+    container_name: sparky-reranker
     restart: unless-stopped
     command:
       - vllm
@@ -54,9 +54,9 @@ services:
   # VLLM EMBED (Port 8015)
   # Qwen3-VL-Embedding-2B on GPU via vLLM
   # ---------------------------------------------------------
-  vl-embed-gpu:
+  sparky-embed:
     image: vllm-node:latest
-    container_name: vllm-embed
+    container_name: sparky-embed
     restart: unless-stopped
     command:
       - vllm
@@ -97,42 +97,39 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------
-  # VLLM (Port 8012)
-  # Qwen3.5-35B-A3B-FP8 — primary coding model (MoE, ~18GB)
+  # VLLM QWEN3-CODER (Port 8012)
+  # Qwen3-Coder-Next FP8 — primary coding model
   # ---------------------------------------------------------
-  vllm-qwen35:
+  sparky-qwen3-coder:
     image: vllm-node:latest
-    container_name: vllm-qwen35
+    container_name: sparky-qwen3-coder
     restart: unless-stopped
     command:
       - vllm
       - serve
-      - Qwen/Qwen3.5-35B-A3B-FP8
+      - Qwen/Qwen3-Coder-Next-FP8
       - --served-model-name
-      - "Qwen3.5 35B"
+      - "Qwen3 Coder Next"
       - --host
       - "0.0.0.0"
       - --port
       - "8012"
       - --max-model-len
-      - "262144"
+      - "196608"
       - --max-num-seqs
       - "64"
       - --gpu-memory-utilization
-      - "0.50"
-      - --reasoning-parser
-      - qwen3
-      - --default-chat-template-kwargs
-      - '{"enable_thinking":true}'
+      - "0.75"
+      - --kv-cache-dtype
+      - fp8
       - --load-format
       - fastsafetensors
       - --attention-backend
       - flashinfer
       - --enable-auto-tool-choice
       - --tool-call-parser
-      - qwen3_xml
-      - --speculative-config
-      - '{"method":"qwen3_next_mtp","num_speculative_tokens":1}'
+      - qwen3_coder
+      - --enable-prefix-caching
       - --seed
       - "3407"
       - --disable-frontend-multiprocessing
