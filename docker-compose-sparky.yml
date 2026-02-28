@@ -97,48 +97,38 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------
-  # VLLM QWEN3-CODER (Port 8012)
-  # Qwen3-Coder-Next FP8 — primary coding model
+  # VLLM QWEN3.5-122B (Port 8012)
+  # Intel Qwen3.5-122B-A10B INT4 AutoRound — primary model
   # ---------------------------------------------------------
-  sparky-qwen3-coder:
+  sparky-qwen3-5-122b:
     image: vllm-node:latest
-    container_name: sparky-qwen3-coder
+    container_name: sparky-qwen3-5-122b
     restart: unless-stopped
+    entrypoint: ["/bin/bash", "-c"]
     command:
-      - vllm
-      - serve
-      - Qwen/Qwen3-Coder-Next-FP8
-      - --served-model-name
-      - "Qwen3 Coder Next"
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8012"
-      - --max-model-len
-      - "196608"
-      - --max-num-seqs
-      - "64"
-      - --gpu-memory-utilization
-      - "0.75"
-      - --kv-cache-dtype
-      - fp8
-      - --load-format
-      - fastsafetensors
-      - --attention-backend
-      - flashinfer
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - qwen3_coder
-      - --enable-prefix-caching
-      - --seed
-      - "3407"
-      - --disable-frontend-multiprocessing
+      - |
+        cd /app/mods && bash run.sh
+        exec vllm serve Intel/Qwen3.5-122B-A10B-int4-AutoRound \
+          --served-model-name "Qwen3.5 122B" \
+          --host 0.0.0.0 \
+          --port 8012 \
+          --max-model-len 196608 \
+          --max-num-seqs 32 \
+          --max-num-batched-tokens 4096 \
+          --gpu-memory-utilization 0.65 \
+          --attention-backend flashinfer \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --enable-prefix-caching \
+          --disable-frontend-multiprocessing
     ports:
       - "8012:8012"
     volumes:
       - /home/tyler/.cache/huggingface:/root/.cache/huggingface
       - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
       - /home/tyler/.cache/vllm:/root/.cache/vllm
+      - ./spark-vllm-docker/mods/fix-qwen3.5-autoround:/app/mods:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
       interval: 30s
