@@ -30,12 +30,13 @@ services:
       - float16
       - --enable-auto-tool-choice
       - --tool-call-parser
-      - qwen3_coder
+      - qwen3_xml
       - --enable-prefix-caching
       - --seed
       - "3407"
     environment:
       - LD_LIBRARY_PATH=/lib/x86_64-linux-gnu
+      - SAFETENSORS_FAST_GPU=1
     ports:
       - "8014:8014"
     volumes:
@@ -78,7 +79,7 @@ services:
   # Redis-compatible cache for SearXNG
   # ---------------------------------------------------------
   ellie-valkey:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:latest
     container_name: ellie-valkey
     restart: always
     command: valkey-server --save 60 1 --loglevel warning
@@ -116,13 +117,13 @@ services:
     restart: always
     environment:
       # --- LLM Backends (direct connection to vLLM services) ---
-      - OPENAI_API_BASE_URLS=http://ellie-qwen3-coder:8014/v1;http://10.20.10.10:8012/v1
+      - OPENAI_API_BASE_URLS=http://ellie-qwen3-coder:8014/v1;http://sparky:8012/v1
       - OPENAI_API_KEYS=sk-no-key-required;sk-no-key-required
       # --- API Keys (allow users to generate sk-* keys) ---
       - ENABLE_API_KEYS=true
       # --- Embeddings (vLLM GPU service on Sparky) ---
       - RAG_EMBEDDING_ENGINE=openai
-      - RAG_OPENAI_API_BASE_URL=http://10.20.10.10:8015/v1
+      - RAG_OPENAI_API_BASE_URL=http://sparky:8015/v1
       - RAG_OPENAI_API_KEY=sk-no-key-required
       - RAG_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-2B
       - RAG_EMBEDDING_BATCH_SIZE=16
@@ -139,7 +140,7 @@ services:
       - ENABLE_RAG_HYBRID_SEARCH=true
       - RAG_RERANKING_MODEL=Qwen/Qwen3-VL-Reranker-2B
       - RAG_RERANKING_ENGINE=external
-      - RAG_EXTERNAL_RERANKER_URL=http://10.20.10.10:8016/v1/rerank
+      - RAG_EXTERNAL_RERANKER_URL=http://sparky:8016/v1/rerank
       - RAG_EXTERNAL_RERANKER_API_KEY=sk-no-key-required
       - RAG_TOP_K=10
       - RAG_RELEVANCE_THRESHOLD=0.1

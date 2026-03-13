@@ -11,7 +11,7 @@ cd "$PROJECT_DIR"
 # Ensure docker context exists
 if ! docker context inspect sparky &>/dev/null; then
     echo "Creating docker context 'sparky'..."
-    docker context create sparky --docker "host=ssh://tyler@10.20.10.10"
+    docker context create sparky --docker "host=ssh://tyler@sparky"
 fi
 
 export DOCKER_CONTEXT=sparky

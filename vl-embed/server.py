@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger("vl-embed")
 
 PORT = int(os.environ.get("PORT", "8014"))
-VLLM_RERANKER_URL = os.environ.get("VLLM_RERANKER_URL", "http://10.20.10.10:8016")
+VLLM_RERANKER_URL = os.environ.get("VLLM_RERANKER_URL", "http://sparky:8016")
 
 # ---------- reranker prompt template ----------
 SYSTEM_PROMPT = (
