@@ -3,9 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-COMPOSE_FILE="docker-compose-sparky.yml"
-ENV_FILE=".env"
-
 cd "$PROJECT_DIR"
 
 # Ensure docker context exists
@@ -15,6 +12,7 @@ if ! docker context inspect sparky &>/dev/null; then
 fi
 
 export DOCKER_CONTEXT=sparky
+export COMPOSE_PROFILES=sparky
 
 # Parse args
 SERVICES=()
@@ -27,13 +25,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "Deploying to Sparky via docker context..."
-docker compose \
-    -f "$COMPOSE_FILE" \
-    --env-file "$ENV_FILE" \
-    up -d $BUILD_FLAG --remove-orphans "${SERVICES[@]+"${SERVICES[@]}"}"
+docker compose up -d $BUILD_FLAG --remove-orphans "${SERVICES[@]+"${SERVICES[@]}"}"
 
 echo ""
 echo "Checking service status..."
-docker compose \
-    -f "$COMPOSE_FILE" \
-    ps
+docker compose ps

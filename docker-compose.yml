@@ -1,0 +1,415 @@
+# =============================================================================
+# AI Stack — Unified Docker Compose
+# =============================================================================
+# Uses profiles to select services per host. Set COMPOSE_PROFILES in .env
+# or export it to match your hostname (ellie, sparky, pete).
+#
+#   COMPOSE_PROFILES=ellie docker compose up -d
+#   COMPOSE_PROFILES=sparky docker compose up -d
+#   COMPOSE_PROFILES=pete docker compose up -d
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  # ELLIE SERVICES (2x Quadro RTX 5000, 16GB each)
+  # ===========================================================================
+
+  # ---------------------------------------------------------
+  # VLLM QWEN3-CODER (Port 8014)
+  # Qwen3-Coder-30B-A3B INT4 AutoRound — subagent model (tool calling)
+  # ---------------------------------------------------------
+  ellie-qwen3-coder:
+    profiles: [ellie]
+    build:
+      context: ./vllm-ellie
+    image: vllm-ellie:latest
+    container_name: ellie-qwen3-coder
+    restart: unless-stopped
+    entrypoint: ["vllm", "serve"]
+    command:
+      - Intel/Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound
+      - --served-model-name
+      - "Qwen3 Coder 30B"
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8014"
+      - --max-model-len
+      - "65536"
+      - --max-num-seqs
+      - "16"
+      - --gpu-memory-utilization
+      - "0.90"
+      - -tp
+      - "2"
+      - --dtype
+      - float16
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      - --enable-prefix-caching
+      - --seed
+      - "3407"
+    environment:
+      - LD_LIBRARY_PATH=/lib/x86_64-linux-gnu
+      - SAFETENSORS_FAST_GPU=1
+    ports:
+      - "8014:8014"
+    volumes:
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8014/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    networks:
+      - ai-stack-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # QDRANT (Port 6333)
+  # Vector database for document search
+  # ---------------------------------------------------------
+  ellie-qdrant:
+    profiles: [ellie]
+    image: qdrant/qdrant:latest
+    container_name: ellie-qdrant
+    restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------
+  # VALKEY (Port 6379)
+  # Redis-compatible cache for SearXNG
+  # ---------------------------------------------------------
+  ellie-valkey:
+    profiles: [ellie]
+    image: valkey/valkey:latest
+    container_name: ellie-valkey
+    restart: always
+    command: valkey-server --save 60 1 --loglevel warning
+    volumes:
+      - valkey_data:/data
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------
+  # SEARXNG (Port 8888)
+  # Private web search engine for RAG retrieval
+  # ---------------------------------------------------------
+  ellie-searxng:
+    profiles: [ellie]
+    image: searxng/searxng:latest
+    container_name: ellie-searxng
+    restart: always
+    ports:
+      - "8888:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    networks:
+      - ai-stack-net
+    depends_on:
+      - ellie-valkey
+
+  # ---------------------------------------------------------
+  # OPEN WEBUI (Port 3000)
+  # Web chat interface with built-in RAG
+  # ---------------------------------------------------------
+  ellie-open-webui:
+    profiles: [ellie]
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: ellie-open-webui
+    restart: always
+    environment:
+      # --- LLM Backends (direct connection to vLLM services) ---
+      - OPENAI_API_BASE_URLS=http://ellie-qwen3-coder:8014/v1;http://sparky:8012/v1
+      - OPENAI_API_KEYS=sk-no-key-required;sk-no-key-required
+      # --- API Keys (allow users to generate sk-* keys) ---
+      - ENABLE_API_KEYS=true
+      # --- Embeddings (vLLM GPU service on Sparky) ---
+      - RAG_EMBEDDING_ENGINE=openai
+      - RAG_OPENAI_API_BASE_URL=http://sparky:8015/v1
+      - RAG_OPENAI_API_KEY=sk-no-key-required
+      - RAG_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-2B
+      - RAG_EMBEDDING_BATCH_SIZE=16
+      # --- Vector DB (Qdrant) ---
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://ellie-qdrant:6333
+      # --- Web Search (SearXNG) ---
+      - ENABLE_RAG_WEB_SEARCH=true
+      - RAG_WEB_SEARCH_ENGINE=searxng
+      - SEARXNG_QUERY_URL=http://ellie-searxng:8080/search?q=<query>
+      - RAG_WEB_SEARCH_RESULT_COUNT=5
+      - RAG_WEB_SEARCH_CONCURRENT_REQUESTS=10
+      # --- Hybrid Search + Reranking (vLLM on Sparky, direct) ---
+      - ENABLE_RAG_HYBRID_SEARCH=true
+      - RAG_RERANKING_MODEL=Qwen/Qwen3-VL-Reranker-2B
+      - RAG_RERANKING_ENGINE=external
+      - RAG_EXTERNAL_RERANKER_URL=http://sparky:8016/v1/rerank
+      - RAG_EXTERNAL_RERANKER_API_KEY=sk-no-key-required
+      - RAG_TOP_K=10
+      - RAG_RELEVANCE_THRESHOLD=0.1
+    ports:
+      - "3000:8080"
+    volumes:
+      - open_webui_data:/app/backend/data
+    networks:
+      - ai-stack-net
+    depends_on:
+      - ellie-qwen3-coder
+      - ellie-qdrant
+      - ellie-searxng
+
+  # ---------------------------------------------------------
+  # FAN CONTROL (internal, no ports)
+  # GPU fan/power curve controller
+  # ---------------------------------------------------------
+  ellie-fan-control:
+    profiles: [ellie]
+    build:
+      context: ./fan-control
+    container_name: ellie-fan-control
+    hostname: ellie
+    restart: always
+    privileged: true
+    environment:
+      - FAN_SETPOINTS=50:30 70:65 78:95 80:100
+      - POWER_SETPOINTS=70:230 80:175 85:125
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ===========================================================================
+  # SPARKY SERVICES (NVIDIA GB10, ~128GB unified)
+  # ===========================================================================
+
+  # ---------------------------------------------------------
+  # VLLM RERANKER (Port 8016)
+  # Qwen3-VL-Reranker-2B on GPU via vLLM
+  # ---------------------------------------------------------
+  sparky-reranker:
+    profiles: [sparky]
+    image: vllm-node:latest
+    container_name: sparky-reranker
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        TU=/usr/local/lib/python3.12/dist-packages/vllm/utils/torch_utils.py
+        python3 -c "from torch._opaque_base import OpaqueBase" 2>/dev/null \
+          || sed -i 's/^HAS_OPAQUE_TYPE = .*/HAS_OPAQUE_TYPE = False/' "$$TU"
+        exec vllm serve Qwen/Qwen3-VL-Reranker-2B \
+          --port 8016 \
+          --runner pooling \
+          --trust-remote-code \
+          --hf-overrides '{"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}' \
+          --chat-template /app/templates/qwen3_vl_reranker.jinja \
+          --gpu-memory-utilization 0.070 \
+          --max-model-len 4096 \
+          --max-num-seqs 16 \
+          --dtype bfloat16 \
+          --disable-frontend-multiprocessing
+    ports:
+      - "8016:8016"
+    volumes:
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
+      - ./vl-embed/qwen3_vl_reranker.jinja:/app/templates/qwen3_vl_reranker.jinja:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8016/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # VLLM EMBED (Port 8015)
+  # Qwen3-VL-Embedding-2B on GPU via vLLM
+  # ---------------------------------------------------------
+  sparky-embed:
+    profiles: [sparky]
+    image: vllm-node:latest
+    container_name: sparky-embed
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        TU=/usr/local/lib/python3.12/dist-packages/vllm/utils/torch_utils.py
+        python3 -c "from torch._opaque_base import OpaqueBase" 2>/dev/null \
+          || sed -i 's/^HAS_OPAQUE_TYPE = .*/HAS_OPAQUE_TYPE = False/' "$$TU"
+        exec vllm serve Qwen/Qwen3-VL-Embedding-2B \
+          --port 8015 \
+          --runner pooling \
+          --trust-remote-code \
+          --gpu-memory-utilization 0.070 \
+          --max-model-len 4096 \
+          --max-num-seqs 16 \
+          --dtype float16 \
+          --disable-frontend-multiprocessing
+    ports:
+      - "8015:8015"
+    volumes:
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8015/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # VLLM NEMOTRON-3-SUPER (Port 8012)
+  # NVIDIA Nemotron-3-Super-120B-A12B NVFP4 — primary model
+  # ---------------------------------------------------------
+  sparky-nemotron-3-super:
+    profiles: [sparky]
+    image: vllm-node:latest
+    container_name: sparky-nemotron-3-super
+    restart: unless-stopped
+    environment:
+      - VLLM_NVFP4_GEMM_BACKEND=marlin
+      - VLLM_TEST_FORCE_FP8_MARLIN=1
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        TU=/usr/local/lib/python3.12/dist-packages/vllm/utils/torch_utils.py
+        python3 -c "from torch._opaque_base import OpaqueBase" 2>/dev/null \
+          || sed -i 's/^HAS_OPAQUE_TYPE = .*/HAS_OPAQUE_TYPE = False/' "$$TU"
+        cd /app/mods/nemotron-super && WORKSPACE_DIR=/workspace/vllm bash run.sh
+        exec vllm serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+          --served-model-name "Nemotron 3 Super" \
+          --host 0.0.0.0 \
+          --port 8012 \
+          --kv-cache-dtype fp8 \
+          --tensor-parallel-size 1 \
+          --max-model-len 262144 \
+          --max-num-seqs 10 \
+          --gpu-memory-utilization 0.70 \
+          --load-format fastsafetensors \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser-plugin /workspace/vllm/super_v3_reasoning_parser.py \
+          --reasoning-parser super_v3 \
+          --enable-prefix-caching \
+          --trust-remote-code
+    ports:
+      - "8012:8012"
+    volumes:
+      - /home/tyler/.cache/huggingface:/root/.cache/huggingface
+      - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
+      - /home/tyler/.cache/vllm:/root/.cache/vllm
+      - ./spark-vllm-docker/mods/nemotron-super:/app/mods/nemotron-super:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ===========================================================================
+  # PETE SERVICES (RTX 5070, 12GB)
+  # ===========================================================================
+
+  # ---------------------------------------------------------
+  # VLLM Qwen3.5-9B (Port 8012)
+  # Intel Qwen3.5-9B INT4 AutoRound — RTX 5070 (12GB)
+  # ---------------------------------------------------------
+  pete-qwen3-5-9b:
+    profiles: [pete]
+    image: vllm/vllm-openai:latest-cu130
+    container_name: pete-qwen3-5-9b
+    restart: unless-stopped
+    environment:
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        pip install -q 'transformers>=5'
+        exec vllm serve Intel/Qwen3.5-9B-int4-AutoRound \
+          --served-model-name "Qwen3.5 9B" \
+          --host 0.0.0.0 \
+          --port 8012 \
+          --max-model-len 16384 \
+          --max-num-seqs 32 \
+          --max-num-batched-tokens 8192 \
+          --gpu-memory-utilization 0.75 \
+          --load-format safetensors \
+          --attention-backend flashinfer \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --enable-prefix-caching \
+          --trust-remote-code
+    ports:
+      - "8012:8012"
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      - ${HOME}/.cache/flashinfer:/root/.cache/flashinfer
+      - ${HOME}/.cache/vllm:/root/.cache/vllm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+networks:
+  ai-stack-net:
+    external: true
+
+volumes:
+  open_webui_data:
+  qdrant_data:
+  valkey_data:
