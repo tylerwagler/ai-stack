@@ -7,28 +7,23 @@ services:
     image: vllm-node:latest
     container_name: sparky-reranker
     restart: unless-stopped
+    entrypoint: ["/bin/bash", "-c"]
     command:
-      - vllm
-      - serve
-      - Qwen/Qwen3-VL-Reranker-2B
-      - --port
-      - "8016"
-      - --runner
-      - pooling
-      - --trust-remote-code
-      - --hf-overrides
-      - '{"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-      - --chat-template
-      - /app/templates/qwen3_vl_reranker.jinja
-      - --gpu-memory-utilization
-      - "0.070"
-      - --max-model-len
-      - "4096"
-      - --max-num-seqs
-      - "16"
-      - --dtype
-      - bfloat16
-      - --disable-frontend-multiprocessing
+      - |
+        TU=/usr/local/lib/python3.12/dist-packages/vllm/utils/torch_utils.py
+        python3 -c "from torch._opaque_base import OpaqueBase" 2>/dev/null \
+          || sed -i 's/^HAS_OPAQUE_TYPE = .*/HAS_OPAQUE_TYPE = False/' "$$TU"
+        exec vllm serve Qwen/Qwen3-VL-Reranker-2B \
+          --port 8016 \
+          --runner pooling \
+          --trust-remote-code \
+          --hf-overrides '{"architectures":["Qwen3VLForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}' \
+          --chat-template /app/templates/qwen3_vl_reranker.jinja \
+          --gpu-memory-utilization 0.070 \
+          --max-model-len 4096 \
+          --max-num-seqs 16 \
+          --dtype bfloat16 \
+          --disable-frontend-multiprocessing
     ports:
       - "8016:8016"
     volumes:
@@ -58,24 +53,21 @@ services:
     image: vllm-node:latest
     container_name: sparky-embed
     restart: unless-stopped
+    entrypoint: ["/bin/bash", "-c"]
     command:
-      - vllm
-      - serve
-      - Qwen/Qwen3-VL-Embedding-2B
-      - --port
-      - "8015"
-      - --runner
-      - pooling
-      - --trust-remote-code
-      - --gpu-memory-utilization
-      - "0.070"
-      - --max-model-len
-      - "4096"
-      - --max-num-seqs
-      - "16"
-      - --dtype
-      - float16
-      - --disable-frontend-multiprocessing
+      - |
+        TU=/usr/local/lib/python3.12/dist-packages/vllm/utils/torch_utils.py
+        python3 -c "from torch._opaque_base import OpaqueBase" 2>/dev/null \
+          || sed -i 's/^HAS_OPAQUE_TYPE = .*/HAS_OPAQUE_TYPE = False/' "$$TU"
+        exec vllm serve Qwen/Qwen3-VL-Embedding-2B \
+          --port 8015 \
+          --runner pooling \
+          --trust-remote-code \
+          --gpu-memory-utilization 0.070 \
+          --max-model-len 4096 \
+          --max-num-seqs 16 \
+          --dtype float16 \
+          --disable-frontend-multiprocessing
     ports:
       - "8015:8015"
     volumes:
@@ -97,38 +89,47 @@ services:
               capabilities: [gpu]
 
   # ---------------------------------------------------------
-  # VLLM QWEN3.5-122B (Port 8012)
-  # Intel Qwen3.5-122B-A10B INT4 AutoRound — primary model
+  # VLLM NEMOTRON-3-SUPER (Port 8012)
+  # NVIDIA Nemotron-3-Super-120B-A12B NVFP4 — primary model
   # ---------------------------------------------------------
-  sparky-qwen3-5-122b:
+  sparky-nemotron-3-super:
     image: vllm-node:latest
-    container_name: sparky-qwen3-5-122b
+    container_name: sparky-nemotron-3-super
     restart: unless-stopped
+    environment:
+      - VLLM_NVFP4_GEMM_BACKEND=marlin
+      - VLLM_TEST_FORCE_FP8_MARLIN=1
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        cd /app/mods && bash run.sh
-        exec vllm serve Intel/Qwen3.5-122B-A10B-int4-AutoRound \
-          --served-model-name "Qwen3.5 122B" \
+        TU=/usr/local/lib/python3.12/dist-packages/vllm/utils/torch_utils.py
+        python3 -c "from torch._opaque_base import OpaqueBase" 2>/dev/null \
+          || sed -i 's/^HAS_OPAQUE_TYPE = .*/HAS_OPAQUE_TYPE = False/' "$$TU"
+        cd /app/mods/nemotron-super && WORKSPACE_DIR=/workspace/vllm bash run.sh
+        exec vllm serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+          --served-model-name "Nemotron 3 Super" \
           --host 0.0.0.0 \
           --port 8012 \
-          --max-model-len 196608 \
-          --max-num-seqs 32 \
-          --max-num-batched-tokens 4096 \
-          --gpu-memory-utilization 0.65 \
-          --attention-backend flashinfer \
+          --kv-cache-dtype fp8 \
+          --tensor-parallel-size 1 \
+          --max-model-len 262144 \
+          --max-num-seqs 10 \
+          --gpu-memory-utilization 0.70 \
+          --load-format fastsafetensors \
           --enable-auto-tool-choice \
           --tool-call-parser qwen3_coder \
-          --reasoning-parser qwen3 \
+          --reasoning-parser-plugin /workspace/vllm/super_v3_reasoning_parser.py \
+          --reasoning-parser super_v3 \
           --enable-prefix-caching \
-          --disable-frontend-multiprocessing
+          --trust-remote-code
     ports:
       - "8012:8012"
     volumes:
       - /home/tyler/.cache/huggingface:/root/.cache/huggingface
       - /home/tyler/.cache/flashinfer:/root/.cache/flashinfer
       - /home/tyler/.cache/vllm:/root/.cache/vllm
-      - ./spark-vllm-docker/mods/fix-qwen3.5-autoround:/app/mods:ro
+      - ./spark-vllm-docker/mods/nemotron-super:/app/mods/nemotron-super:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
       interval: 30s
