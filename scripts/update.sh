@@ -30,7 +30,6 @@ display_help() {
     echo "Options:"
     echo "  --restore       Restore the latest volume backup"
     echo "  --check-only    Only check for updates, don't apply them"
-    echo "  --dry-run       Check for updates without pulling new images"
     echo "  --help, -h      Display this help message"
     exit 0
 }
@@ -38,7 +37,6 @@ display_help() {
 # Parse arguments
 RESTORE_MODE=false
 CHECK_ONLY=false
-DRY_RUN=false
 INTERACTIVE=true
 
 if [ $# -gt 0 ]; then
@@ -51,10 +49,6 @@ if [ $# -gt 0 ]; then
                 ;;
             --check-only)
                 CHECK_ONLY=true
-                shift
-                ;;
-            --dry-run)
-                DRY_RUN=true
                 shift
                 ;;
             --help|-h)
@@ -74,18 +68,28 @@ mkdir -p "$BACKUP_DIR"
 # HELPER FUNCTIONS
 # =============================================
 
-get_image_info() {
+get_image_id() {
+    docker inspect -f '{{.Id}}' "$1" 2>/dev/null | cut -d':' -f2 | cut -c1-12
+}
+
+get_image_date() {
+    local created
+    created=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.created"}}' "$1" 2>/dev/null)
+    [ -n "$created" ] && echo "$created" | cut -dT -f1 || echo "N/A"
+}
+
+# Get the image ID a running container was started with
+get_running_image_id() {
+    local container=$1
+    local img_id
+    img_id=$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null)
+    [ -n "$img_id" ] && echo "$img_id" | cut -d':' -f2 | cut -c1-12
+}
+
+# Get the remote registry digest without pulling
+get_remote_digest() {
     local image=$1
-    local fmt="{{.Id}}|{{index .Config.Labels \"org.opencontainers.image.revision\"}}|{{index .Config.Labels \"org.opencontainers.image.created\"}}"
-    docker inspect -f "$fmt" "$image" 2>/dev/null
-}
-
-format_id() {
-    echo "$1" | cut -d':' -f2 | cut -c1-12
-}
-
-format_date() {
-    echo "$1" | cut -d'T' -f1
+    docker manifest inspect "$image" 2>/dev/null | grep -m1 '"digest"' | awk -F'"' '{print $4}' | cut -d':' -f2 | cut -c1-12
 }
 
 cleanup_backups() {
@@ -180,52 +184,104 @@ prune_llama_cache() {
 # =============================================
 
 check_for_updates() {
-    local mode_text="Checking"
-    [ "$DRY_RUN" = true ] && mode_text="Dry-running update check"
-    
-    echo -e "${BLUE}🔍 $mode_text...${NC}"
+    echo -e "${BLUE}🔍 Checking for updates...${NC}"
     local updated=0
-    
-    # Map images to services
+
+    # Map images to services and containers
     local image_mapping
     image_mapping=$(docker compose config | awk '/^  [a-zA-Z0-9_-]+:/ {svc=$1; gsub(/:/, "", svc)} /image:/ {print $2, svc}')
-    
+
+    # Also map services to container names
+    local container_mapping
+    container_mapping=$(docker compose config | awk '/^  [a-zA-Z0-9_-]+:/ {svc=$1; gsub(/:/, "", svc)} /container_name:/ {print svc, $2}')
+
     # Get unique images
     local images
     images=$(echo "$image_mapping" | cut -d' ' -f1 | sort -u)
-    
+
     for image in $images; do
-        # Find which services use this image
         local affecting_services
         affecting_services=$(echo "$image_mapping" | grep -F "$image " | cut -d' ' -f2- | xargs)
-        
+
         echo -e "${BLUE}Image: $image${NC}"
-        echo -e "  Affects: $affecting_services"
-        
-        # Get current info 
-        local current_info=$(get_image_info "$image")
-        local current_id=$(echo "$current_info" | cut -d'|' -f1)
-        local current_rev=$(echo "$current_info" | cut -d'|' -f2)
-        local current_date=$(echo "$current_info" | cut -d'|' -f3)
-        
-        # Pull (unless in dry run)
-        if [ "$DRY_RUN" = false ]; then
-            docker pull -q "$image" >/dev/null 2>&1
+        echo -e "  Services: $affecting_services"
+
+        # 1. Running — what the container was started with
+        local first_service
+        first_service=$(echo "$affecting_services" | awk '{print $1}')
+        local container_name
+        container_name=$(echo "$container_mapping" | grep "^${first_service} " | awk '{print $2}')
+        local running_id
+        running_id=$(get_running_image_id "${container_name:-$first_service}")
+
+        # 2. Pulled — what's locally tagged
+        local pulled_id
+        pulled_id=$(get_image_id "$image")
+
+        # 3. Remote — what's on the registry (skip for local-only images)
+        local remote_digest=""
+        local is_local=false
+        local repo_digest
+        repo_digest=$(docker image inspect "$image" -f '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null)
+        if [ -z "$repo_digest" ]; then
+            is_local=true
         fi
-        
-        # Get latest info
-        local latest_info=$(get_image_info "$image")
-        local latest_id=$(echo "$latest_info" | cut -d'|' -f1)
-        local latest_rev=$(echo "$latest_info" | cut -d'|' -f2)
-        local latest_date=$(echo "$latest_info" | cut -d'|' -f3)
-        
-        if [ "$current_id" != "$latest_id" ]; then
-            echo -e "  ${YELLOW}Update Available!${NC}"
-            echo -e "  Current: $(format_id "$current_id") [Rev: ${current_rev:-N/A}] ($(format_date "$current_date"))"
-            echo -e "  Latest:  $(format_id "$latest_id") [Rev: ${latest_rev:-N/A}] ($(format_date "$latest_date"))"
-            updated=1
+
+        if [ "$is_local" = false ]; then
+            remote_digest=$(get_remote_digest "$image")
+            # If manifest inspect failed, image isn't on any registry
+            if [ -z "$remote_digest" ]; then
+                is_local=true
+            fi
+        fi
+
+        # Compare and report
+        local pulled_date
+        pulled_date=$(get_image_date "$image")
+
+        if [ "$is_local" = true ]; then
+            if [ -n "$running_id" ] && [ "$running_id" != "$pulled_id" ]; then
+                echo -e "  ${YELLOW}Restart needed — newer local build available${NC}"
+                echo -e "  Running: ${running_id}"
+                echo -e "  Built:   ${pulled_id}"
+                updated=1
+            else
+                echo -e "  ${GREEN}Up to date.${NC} (${pulled_id:-N/A}, local build)"
+            fi
+        elif [ -z "$remote_digest" ]; then
+            echo -e "  ${YELLOW}Could not check registry${NC}"
+            echo -e "  Pulled:  ${pulled_id:-N/A} ($pulled_date)"
+            [ -n "$running_id" ] && [ "$running_id" != "$pulled_id" ] \
+                && echo -e "  Running: ${running_id} ${YELLOW}(restart needed)${NC}"
         else
-            echo -e "  ${GREEN}Up to date.${NC} ($(format_id "$current_id"))"
+            local pulled_digest
+            pulled_digest=$(echo "$repo_digest" | grep -o 'sha256:[a-f0-9]*' | cut -d':' -f2 | cut -c1-12)
+
+            local needs_pull=false
+            local needs_restart=false
+
+            [ -n "$pulled_digest" ] && [ "$pulled_digest" != "$remote_digest" ] && needs_pull=true
+            [ -n "$running_id" ] && [ "$running_id" != "$pulled_id" ] && needs_restart=true
+
+            if [ "$needs_pull" = true ] && [ "$needs_restart" = true ]; then
+                echo -e "  ${YELLOW}Update available + restart needed${NC}"
+                echo -e "  Running: ${running_id} ($pulled_date)"
+                echo -e "  Pulled:  ${pulled_id} (digest ${pulled_digest})"
+                echo -e "  Remote:  ${remote_digest}"
+                updated=1
+            elif [ "$needs_pull" = true ]; then
+                echo -e "  ${YELLOW}Update available on registry${NC}"
+                echo -e "  Pulled:  ${pulled_id} (digest ${pulled_digest}, $pulled_date)"
+                echo -e "  Remote:  ${remote_digest}"
+                updated=1
+            elif [ "$needs_restart" = true ]; then
+                echo -e "  ${YELLOW}Restart needed — newer image already pulled${NC}"
+                echo -e "  Running: ${running_id}"
+                echo -e "  Pulled:  ${pulled_id} ($pulled_date)"
+                updated=1
+            else
+                echo -e "  ${GREEN}Up to date.${NC} (${pulled_id}, $pulled_date)"
+            fi
         fi
         echo ""
     done
@@ -275,12 +331,11 @@ check_model_updates() {
 }
 
 apply_updates() {
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${YELLOW}Dry-run complete. No changes applied.${NC}"
-        return 0
-    fi
-
     backup_volume "$WEBUI_VOLUME" || exit 1
+
+    echo -e "${GREEN}Pulling latest images...${NC}"
+    docker compose pull --ignore-buildable
+
     echo -e "${GREEN}Applying updates and waiting for health checks...${NC}"
     docker compose up -d --remove-orphans
     
@@ -349,8 +404,6 @@ else
     elif [ "$CHECK_ONLY" = true ]; then
         check_for_updates
         [ $? -eq 1 ] && echo -e "${YELLOW}Updates are available.${NC}" || echo -e "${GREEN}Stack is up to date.${NC}"
-    elif [ "$DRY_RUN" = true ]; then
-        check_for_updates
     else
         check_for_updates
         if [ $? -eq 1 ]; then
